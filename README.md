@@ -1,109 +1,154 @@
 # Bibliotheque IA
 
-Base de connaissances locale pour IA : extraction batch depuis un corpus de
-documents, graphe type dans SQLite, index plein texte FTS5, embeddings optionnels
-avec `sqlite-vec`, puis exposition par CLI ou serveur MCP.
+Bibliotheque IA transforme un dossier de documents en base de connaissances
+locale, interrogeable par une IA.
 
-## Architecture
+Au lieu de donner a l'IA une pile de fichiers a relire a chaque question, le
+pipeline absorbe le corpus une fois, extrait les entites importantes, cree des
+liens entre elles, garde les passages sources, puis construit une base SQLite.
+L'IA peut ensuite chercher, citer ses sources, ouvrir une fiche, suivre les liens
+du graphe et executer des requetes SQL en lecture seule.
 
-- `data/sources/` : fichiers bruts a indexer.
-- `data/work/` : artefacts intermediaires reconstructibles.
-- `data/kb.sqlite` : base finale.
-- `config/ontologie.yaml` : types de noeuds, relations et regles de canonisation.
-- `src/` : passes du pipeline.
-- `scripts/` : wrappers executables.
-- `mcp/server.py` : serveur MCP stdio.
+## Ce que ca fait
 
-Le modele de donnees combine trois entrees utiles pour une IA :
+- Convertit les documents de `data/sources/` en texte exploitable.
+- Decoupe les documents en passages indexes.
+- Utilise un LLM local pour extraire les personnes, decisions, actions, risques,
+  tests, procedures, modules, reunions, etc.
+- Fusionne les doublons comme `H. Dupont`, `Helene Dupont` et `Mme Dupont`.
+- Cree un graphe de connaissances dans SQLite : `nodes` + `edges`.
+- Ajoute une recherche plein texte FTS5.
+- Ajoute des fiches de synthese par noeud.
+- Ajoute des embeddings si Ollama et `sqlite-vec` sont disponibles.
+- Expose la base par CLI et par serveur MCP pour une IA.
 
-- recherche plein texte dans les passages sources ;
-- recherche vectorielle sur passages et fiches de noeuds quand `sqlite-vec` et
-  Ollama sont disponibles ;
-- graphe `nodes` / `edges` traversable par voisinage et chemin.
+## Pourquoi
 
-## Installation
+Une IA n'a pas besoin d'une belle arborescence de fichiers. Elle a besoin de bons
+points d'entree dans la connaissance :
 
-Sur Ubuntu :
+- `schema` pour comprendre ce qu'il y a dans la base ;
+- `recherche` pour trouver les passages et les concepts pertinents ;
+- `fiche` pour lire une synthese courte d'un objet ;
+- `voisins` pour explorer ce qui est lie ;
+- `chemin` pour expliquer le lien entre deux objets ;
+- `requete_sql` pour les questions precises ou analytiques.
+
+La base reste locale et reconstructible. Les fichiers originaux restent la source
+de verite ; `data/kb.sqlite` est un index enrichi que l'on peut regenerer.
+
+## Installation rapide
+
+Par defaut, le LLM utilise est LM Studio avec le modele :
+
+```text
+google/gemma-4-e4b
+```
+
+L'installation demande l'URL de l'API LM Studio et un token optionnel.
 
 ```bash
 ./scripts/00_install.sh
 ```
 
-Avec installation d'Ollama :
+Valeurs par defaut :
+
+```text
+LMSTUDIO_URL=http://localhost:1234/v1
+LMSTUDIO_API_KEY=
+KB_LLM_PROVIDER=lmstudio
+KB_MODELE_EXTRACTION=google/gemma-4-e4b
+```
+
+Le choix est enregistre dans `config/local_settings.sh`, ignore par Git et cree
+avec des permissions restrictives.
+
+Si vous voulez aussi Ollama pour les embeddings :
 
 ```bash
 ./scripts/00_install.sh --avec-ollama
 ```
 
-Sur macOS ou autre environnement, creez un venv puis installez :
+Ollama est optionnel. Sans embeddings, la base fonctionne quand meme en mode
+plein texte + graphe.
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+## Preparer LM Studio
+
+1. Ouvrez LM Studio.
+2. Chargez le modele `google/gemma-4-e4b`.
+3. Demarrez le serveur local OpenAI-compatible.
+4. Verifiez que l'URL correspond a celle configuree, par defaut :
+
+```text
+http://localhost:1234/v1
 ```
 
-Les modeles par defaut sont configures dans `config/settings.sh` :
-
-- fournisseur LLM : LM Studio
-- extraction/fiches/arbitrage : `google/gemma-4-e4b`
-- embeddings : `bge-m3`
-
-Pendant l'installation, `scripts/00_install.sh` demande l'URL API LM Studio et
-un token optionnel. Validez la valeur par defaut `http://localhost:1234/v1` ou
-saisissez une autre URL. Le choix est enregistre dans `config/local_settings.sh`,
-ignore par Git et cree avec des permissions restrictives.
-
-Pour utiliser le comportement par defaut, demarrez le serveur local
-OpenAI-compatible dans LM Studio, chargez `google/gemma-4-e4b`, puis lancez :
+Si votre serveur demande un token, renseignez-le pendant l'installation ou
+surchargez-le ponctuellement :
 
 ```bash
-./scripts/run_all.sh
+LMSTUDIO_API_KEY=sk-local-optionnel ./scripts/run_all.sh
 ```
 
-Vous pouvez toujours surcharger ponctuellement :
+## Absorber les documents
 
-```bash
-KB_LLM_PROVIDER=lmstudio \
-LMSTUDIO_URL=http://localhost:1234/v1 \
-LMSTUDIO_API_KEY=sk-local-optionnel \
-KB_MODELE_EXTRACTION=google/gemma-4-e4b \
-./scripts/run_all.sh
+Deposez vos fichiers dans :
+
+```text
+data/sources/
 ```
 
-Dans ce mode, LM Studio sert a l'extraction, aux fiches et a l'arbitrage de
-canonisation. Les embeddings restent fournis par Ollama (`bge-m3`) si disponible ;
-sinon la base reste chargeable en mode plein texte + graphe.
+Les sous-dossiers sont autorises.
 
-Pour revenir a Ollama comme fournisseur LLM :
-
-```bash
-KB_LLM_PROVIDER=ollama KB_MODELE_EXTRACTION=qwen3:14b ./scripts/run_all.sh
-```
-
-## Utilisation
-
-Deposez les documents dans `data/sources/`, puis lancez :
+Lancez ensuite le pipeline complet :
 
 ```bash
 ./scripts/run_all.sh
 ```
 
-Pour reprendre a une etape :
+La base finale est creee ici :
+
+```text
+data/kb.sqlite
+```
+
+Le rapport qualite est cree ici :
+
+```text
+data/rapport_validation.md
+```
+
+## Reprendre une etape
+
+Le pipeline est decoupe en passes :
+
+```bash
+./scripts/10_normalize.sh
+./scripts/20_extract.sh
+./scripts/30_canonize.sh
+./scripts/40_enrich.sh
+./scripts/50_load.sh
+./scripts/60_validate.sh
+```
+
+Pour reprendre depuis une etape :
 
 ```bash
 ./scripts/run_all.sh 30
 ```
 
-Etapes disponibles :
+Repere simple :
 
-- `10_normalize` : conversion Markdown et decoupage en chunks.
-- `20_extract` : extraction LLM des entites et relations.
-- `30_canonize` : fusion des entites et resolution des relations.
-- `40_enrich` : fiches de synthese et embeddings.
-- `50_load` : reconstruction SQLite.
-- `60_validate` : rapport qualite.
+- `10` convertit et decoupe les documents.
+- `20` extrait les entites et relations avec le LLM.
+- `30` fusionne les doublons et stabilise les identifiants.
+- `40` redige les fiches et calcule les embeddings si possible.
+- `50` reconstruit `data/kb.sqlite`.
+- `60` controle la qualite.
 
-Interroger la base :
+## Interroger la base en CLI
+
+Quelques exemples :
 
 ```bash
 ./scripts/90_query.sh schema
@@ -113,41 +158,116 @@ Interroger la base :
 ./scripts/90_query.sh chemin DEC-xxxxxxxx TST-yyyyyyyy
 ```
 
-## MCP
+Les resultats sont du JSON borne, avec provenance quand elle existe.
 
-Le serveur MCP expose les outils `schema`, `recherche`, `fiche`, `voisins`,
-`chemin` et `requete_sql` en transport stdio :
+## Comment utiliser la DB construite avec mon IA préférée après que les documents aient été absorbés
+
+Une fois `data/kb.sqlite` construit, le plus confortable est d'utiliser le serveur
+MCP fourni par le projet. Il expose des outils propres a l'IA, au lieu de lui
+donner seulement un fichier SQLite brut.
+
+Demarrez le serveur MCP :
 
 ```bash
 ./mcp/run_mcp.sh
 ```
 
-Configuration generique cote client :
+Dans votre client IA compatible MCP, ajoutez un serveur de ce type :
 
 ```json
 {
   "mcpServers": {
     "bibliotheque-ia": {
-      "command": "/chemin/vers/bibliotheque_ia/mcp/run_mcp.sh"
+      "command": "/chemin/absolu/vers/bibliotheque_ia/mcp/run_mcp.sh"
     }
   }
 }
 ```
 
-Pour Claude Desktop ou Claude Code, suivez la documentation officielle MCP sur
-[docs.claude.com](https://docs.claude.com/).
+Remplacez `/chemin/absolu/vers/bibliotheque_ia` par le chemin reel du projet.
+Sur cette machine, c'est par exemple :
 
-## Mode texte seul
+```text
+/Users/Dax/Documents/GitHub/bibliotheque_ia
+```
 
-La base reste exploitable sans embeddings : `load.py` charge FTS5 et ignore
-proprement `sqlite-vec` si l'extension n'est pas disponible. Les passes
-`20_extract` et la generation des fiches dans `40_enrich` demandent un LLM
-joignable, via Ollama ou LM Studio. Les embeddings demandent Ollama, mais ils
-sont ignores proprement si indisponibles.
+L'IA aura alors acces a ces outils :
 
-## Qualite
+- `schema` : comprendre l'ontologie et la volumetrie.
+- `recherche` : trouver les passages et noeuds pertinents.
+- `fiche` : lire tout ce que la base sait d'un noeud.
+- `voisins` : explorer le graphe autour d'un noeud.
+- `chemin` : expliquer le lien entre deux noeuds.
+- `requete_sql` : lancer une requete SQL en lecture seule.
 
-`data/rapport_validation.md` signale notamment :
+Exemples de questions a poser a votre IA apres branchement MCP :
+
+- "Commence par appeler `schema`, puis cherche les decisions liees a la reprise
+  des donnees fournisseurs."
+- "Trouve les risques qui bloquent un jalon et cite les sources."
+- "Pour la decision DEC-xxxx, donne-moi le contexte, les actions liees et les
+  tests qui la valident."
+- "Quel est le chemin entre cette procedure et ce module ?"
+
+Si votre IA ne supporte pas MCP, utilisez la CLI comme passerelle : demandez-lui
+quelle commande lancer, executez-la, puis collez-lui le JSON obtenu.
+
+Exemple :
+
+```bash
+./scripts/90_query.sh recherche "risques recette" --k 10
+```
+
+Pour une IA ou un outil qui sait lire directement SQLite, ouvrez :
+
+```text
+data/kb.sqlite
+```
+
+Tables principales :
+
+- `documents` : fichiers sources absorbes.
+- `chunks` + `chunks_fts` : passages et index plein texte.
+- `nodes` : entites canoniques.
+- `edges` : relations typees entre entites.
+- `mentions` : provenance des noeuds dans les passages.
+- `aliases` : variantes fusionnees.
+
+Mais pour un usage IA, MCP reste preferable : les resultats sont bornes,
+structures et orientes raisonnement.
+
+## Changer de fournisseur LLM
+
+LM Studio est le defaut. Pour revenir ponctuellement a Ollama :
+
+```bash
+KB_LLM_PROVIDER=ollama \
+KB_MODELE_EXTRACTION=qwen3:14b \
+./scripts/run_all.sh
+```
+
+Pour changer l'URL LM Studio ou le token sans relancer l'installation :
+
+```bash
+LMSTUDIO_URL=http://localhost:1234/v1 \
+LMSTUDIO_API_KEY=sk-local-optionnel \
+./scripts/run_all.sh
+```
+
+## Fichiers importants
+
+- `config/ontologie.yaml` : vocabulaire ferme de la base.
+- `config/settings.sh` : configuration par defaut.
+- `config/local_settings.sh` : configuration locale creee par l'installation.
+- `data/sources/` : documents originaux.
+- `data/work/` : artefacts intermediaires.
+- `data/kb.sqlite` : base construite.
+- `mcp/server.py` : serveur MCP.
+- `scripts/90_query.sh` : interrogation CLI.
+
+## Qualite et limites
+
+`data/rapport_validation.md` signale les points a verifier :
 
 - types hors ontologie ;
 - aretes pendantes ;
@@ -155,3 +275,7 @@ sont ignores proprement si indisponibles.
 - documents sans extraction ;
 - couverture vectorielle ;
 - echantillons de fiches a relire.
+
+Le LLM peut mal extraire ou mal fusionner certaines informations. Le rapport de
+validation sert justement a relire un echantillon, ajuster `config/ontologie.yaml`
+ou ajouter des equivalences de canonisation, puis reconstruire la base.
