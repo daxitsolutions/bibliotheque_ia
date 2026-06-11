@@ -1,0 +1,8 @@
+.venv/
+.pycache/
+__pycache__/
+*.pyc
+
+data/kb.sqlite*
+data/rapport_validation.md
+data/work/

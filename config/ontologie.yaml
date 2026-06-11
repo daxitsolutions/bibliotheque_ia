@@ -1,0 +1,132 @@
+# =============================================================================
+# ONTOLOGIE DE LA BASE DE CONNAISSANCES — vocabulaire fermé
+# -----------------------------------------------------------------------------
+# Ce fichier est la source de vérité du modèle de données :
+#   - il génère dynamiquement le prompt d'extraction LLM,
+#   - il valide les entités et relations extraites,
+#   - il est exposé tel quel à l'IA via l'outil MCP `schema`.
+# Toute évolution ici justifie une reconstruction de la base (./run_all.sh 20).
+# =============================================================================
+version: 1
+
+noeuds:
+  personne:
+    prefixe: PER
+    fiche: true
+    description: "Individu cité : participant, responsable, intervenant, formateur"
+  organisation:
+    prefixe: ORG
+    fiche: true
+    description: "Société, équipe ou entité : client, intégrateur, éditeur, direction"
+  reunion:
+    prefixe: REU
+    fiche: true
+    description: "Réunion, comité, atelier, point d'avancement, instance de gouvernance"
+  decision:
+    prefixe: DEC
+    fiche: true
+    description: "Décision actée, arbitrage rendu, choix validé (architecture, organisation, périmètre)"
+  action:
+    prefixe: ACT
+    fiche: true
+    description: "Action à mener, tâche assignée, point ouvert avec porteur"
+  risque:
+    prefixe: RSQ
+    fiche: true
+    description: "Risque identifié, point d'attention, alerte"
+  exigence:
+    prefixe: EXG
+    fiche: true
+    description: "Exigence fonctionnelle ou technique, besoin exprimé, règle de gestion"
+  test:
+    prefixe: TST
+    fiche: true
+    description: "Cas de test, scénario de recette, campagne de tests"
+  anomalie:
+    prefixe: ANO
+    fiche: true
+    description: "Défaut, bug, incident, écart constaté"
+  procedure:
+    prefixe: PRC
+    fiche: true
+    description: "Procédure, mode opératoire, consigne d'exploitation, manuel utilisateur"
+  formation:
+    prefixe: FRM
+    fiche: true
+    description: "Session, parcours ou support de formation"
+  module:
+    prefixe: MOD
+    fiche: true
+    description: "Module, système, composant applicatif, interface ou flux technique"
+  jalon:
+    prefixe: JAL
+    fiche: true
+    description: "Jalon, échéance, phase ou étape du planning projet"
+
+relations:
+  decidee_lors_de:
+    sources: [decision]
+    cibles: [reunion]
+    description: "La décision a été actée lors de cette réunion"
+  decoule_de:
+    sources: [action, decision]
+    cibles: [decision, reunion, anomalie, risque, exigence]
+    description: "Fait suite à, est la conséquence de"
+  participe_a:
+    sources: [personne, organisation]
+    cibles: [reunion, formation]
+    description: "A participé ou est convié à"
+  responsable_de:
+    sources: [personne, organisation]
+    cibles: [action, decision, test, procedure, module, anomalie, formation]
+    description: "Est porteur, propriétaire ou responsable de"
+  appartient_a:
+    sources: [personne]
+    cibles: [organisation]
+    description: "Est rattaché à l'organisation"
+  concerne:
+    sources: [decision, action, risque, exigence, test, anomalie, procedure, formation, reunion]
+    cibles: [module, jalon]
+    description: "Porte sur le module, le système ou le jalon"
+  validee_par:
+    sources: [decision, exigence, procedure]
+    cibles: [test, reunion]
+    description: "Est validée ou confirmée par"
+  couverte_par:
+    sources: [exigence]
+    cibles: [test, procedure]
+    description: "L'exigence est couverte par ce test ou cette procédure"
+  detectee_lors_de:
+    sources: [anomalie]
+    cibles: [test, reunion]
+    description: "L'anomalie a été détectée pendant"
+  bloque:
+    sources: [risque, anomalie, action]
+    cibles: [jalon, test, action, module]
+    description: "Bloque ou met en péril"
+  traite_par:
+    sources: [risque, anomalie]
+    cibles: [action, decision]
+    description: "Est traité, atténué ou résolu par"
+  forme_a:
+    sources: [formation]
+    cibles: [procedure, module]
+    description: "La formation porte sur cette procédure ou ce module"
+  precede:
+    sources: [jalon]
+    cibles: [jalon]
+    description: "Précède dans le planning"
+  liee_a:
+    sources: ["*"]
+    cibles: ["*"]
+    description: "Lien générique — uniquement en dernier recours quand aucun autre type ne convient"
+
+canonisation:
+  # Mots retirés lors de la normalisation des noms de personnes
+  titres_a_retirer: ["m", "mr", "mme", "mlle", "dr", "monsieur", "madame", "mademoiselle"]
+  # Fusions forcées connues : [type, nom_canonique, alias]
+  # À compléter au fil de l'eau quand le rapport de validation révèle des doublons.
+  equivalences: []
+  # exemple :
+  #   - [personne, "Marie Dupont", "M. Dupont"]
+  #   - [module, "Gestion des commandes", "GDC"]

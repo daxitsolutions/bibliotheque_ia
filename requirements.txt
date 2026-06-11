@@ -1,0 +1,6 @@
+markitdown
+mcp
+pyyaml
+rapidfuzz
+requests
+sqlite-vec
