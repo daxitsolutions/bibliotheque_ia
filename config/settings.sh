@@ -25,6 +25,7 @@ export KB_ONTOLOGIE="${KB_ONTOLOGIE:-$KB_RACINE/config/ontologie.yaml}"
 export KB_LLM_PROVIDER="${KB_LLM_PROVIDER:-lmstudio}"
 export OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 export LMSTUDIO_URL="${LMSTUDIO_URL:-http://localhost:1234/v1}"
+export LMSTUDIO_API_KEY="${LMSTUDIO_API_KEY:-}"
 if [[ "$KB_LLM_PROVIDER" == "lmstudio" ]]; then
   export KB_MODELE_EXTRACTION="${KB_MODELE_EXTRACTION:-google/gemma-4-e4b}"
 else

@@ -48,9 +48,10 @@ Les modeles par defaut sont configures dans `config/settings.sh` :
 - extraction/fiches/arbitrage : `google/gemma-4-e4b`
 - embeddings : `bge-m3`
 
-Pendant l'installation, `scripts/00_install.sh` demande l'URL API LM Studio.
-Validez la valeur par defaut `http://localhost:1234/v1` ou saisissez une autre
-URL. Le choix est enregistre dans `config/local_settings.sh`, ignore par Git.
+Pendant l'installation, `scripts/00_install.sh` demande l'URL API LM Studio et
+un token optionnel. Validez la valeur par defaut `http://localhost:1234/v1` ou
+saisissez une autre URL. Le choix est enregistre dans `config/local_settings.sh`,
+ignore par Git et cree avec des permissions restrictives.
 
 Pour utiliser le comportement par defaut, demarrez le serveur local
 OpenAI-compatible dans LM Studio, chargez `google/gemma-4-e4b`, puis lancez :
@@ -64,6 +65,7 @@ Vous pouvez toujours surcharger ponctuellement :
 ```bash
 KB_LLM_PROVIDER=lmstudio \
 LMSTUDIO_URL=http://localhost:1234/v1 \
+LMSTUDIO_API_KEY=sk-local-optionnel \
 KB_MODELE_EXTRACTION=google/gemma-4-e4b \
 ./scripts/run_all.sh
 ```

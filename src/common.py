@@ -30,6 +30,7 @@ DB_PATH = Path(os.environ.get("KB_DB", RACINE / "data" / "kb.sqlite"))
 ONTOLOGIE_PATH = Path(os.environ.get("KB_ONTOLOGIE", RACINE / "config" / "ontologie.yaml"))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 LMSTUDIO_URL = os.environ.get("LMSTUDIO_URL", "http://localhost:1234/v1").rstrip("/")
+LMSTUDIO_API_KEY = os.environ.get("LMSTUDIO_API_KEY", "")
 LLM_PROVIDER = os.environ.get("KB_LLM_PROVIDER", "ollama").lower()
 MODELE_EXTRACTION = os.environ.get("KB_MODELE_EXTRACTION", "qwen3:14b")
 MODELE_EMBEDDING = os.environ.get("KB_MODELE_EMBEDDING", "bge-m3")
@@ -133,11 +134,17 @@ def sha_texte(texte: str) -> str:
 
 
 # --- Clients LLM -----------------------------------------------------------------
-def _http_disponible(url: str) -> bool:
+def _lmstudio_headers() -> dict:
+    if not LMSTUDIO_API_KEY:
+        return {}
+    return {"Authorization": f"Bearer {LMSTUDIO_API_KEY}"}
+
+
+def _http_disponible(url: str, headers=None) -> bool:
     if requests is None:
         return False
     try:
-        return requests.get(url, timeout=3).ok
+        return requests.get(url, headers=headers or {}, timeout=3).ok
     except Exception:
         return False
 
@@ -145,7 +152,7 @@ def _http_disponible(url: str) -> bool:
 def llm_disponible() -> bool:
     """Indique si le fournisseur LLM configure repond."""
     if LLM_PROVIDER == "lmstudio":
-        return _http_disponible(f"{LMSTUDIO_URL}/models")
+        return _http_disponible(f"{LMSTUDIO_URL}/models", headers=_lmstudio_headers())
     return _http_disponible(f"{OLLAMA_URL}/api/tags")
 
 
@@ -187,7 +194,12 @@ def appel_llm(messages: list, json_attendu: bool = True,
                 }
                 if json_attendu:
                     corps["response_format"] = {"type": "json_object"}
-                r = requests.post(f"{LMSTUDIO_URL}/chat/completions", json=corps, timeout=900)
+                r = requests.post(
+                    f"{LMSTUDIO_URL}/chat/completions",
+                    headers=_lmstudio_headers(),
+                    json=corps,
+                    timeout=900,
+                )
                 r.raise_for_status()
                 contenu = r.json()["choices"][0]["message"]["content"]
             else:

@@ -29,21 +29,48 @@ echo "== [3/4] Répertoires de travail =="
 mkdir -p "$RACINE/data/sources" "$RACINE/data/work"
 
 echo "== [4/4] LM Studio, Ollama et modèles =="
+shell_quote() {
+    printf "%q" "$1"
+}
+
 LMSTUDIO_URL_DEFAUT="${LMSTUDIO_URL:-http://localhost:1234/v1}"
+LMSTUDIO_API_KEY_DEFAUT="${LMSTUDIO_API_KEY:-}"
 if [[ -t 0 ]]; then
     read -r -p "URL API LM Studio [$LMSTUDIO_URL_DEFAUT] : " LMSTUDIO_URL_SAISIE
     LMSTUDIO_URL_CHOISIE="${LMSTUDIO_URL_SAISIE:-$LMSTUDIO_URL_DEFAUT}"
+    read -r -s -p "Token API LM Studio (optionnel, Entrée si aucun) : " LMSTUDIO_API_KEY_SAISIE
+    echo ""
+    LMSTUDIO_API_KEY_CHOISIE="${LMSTUDIO_API_KEY_SAISIE:-$LMSTUDIO_API_KEY_DEFAUT}"
 else
     LMSTUDIO_URL_CHOISIE="$LMSTUDIO_URL_DEFAUT"
+    LMSTUDIO_API_KEY_CHOISIE="$LMSTUDIO_API_KEY_DEFAUT"
     echo "   Mode non interactif : URL LM Studio = $LMSTUDIO_URL_CHOISIE"
+    if [[ -n "$LMSTUDIO_API_KEY_CHOISIE" ]]; then
+        echo "   Mode non interactif : token LM Studio fourni par l'environnement"
+    fi
 fi
 cat > "$RACINE/config/local_settings.sh" <<EOF
 # Généré par scripts/00_install.sh
-export KB_LLM_PROVIDER="\${KB_LLM_PROVIDER:-lmstudio}"
-export LMSTUDIO_URL="\${LMSTUDIO_URL:-$LMSTUDIO_URL_CHOISIE}"
-export KB_MODELE_EXTRACTION="\${KB_MODELE_EXTRACTION:-google/gemma-4-e4b}"
+if [[ -z "\${KB_LLM_PROVIDER:-}" ]]; then
+  export KB_LLM_PROVIDER=lmstudio
+fi
+if [[ -z "\${LMSTUDIO_URL:-}" ]]; then
+  export LMSTUDIO_URL=$(shell_quote "$LMSTUDIO_URL_CHOISIE")
+fi
+if [[ -z "\${LMSTUDIO_API_KEY:-}" ]]; then
+  export LMSTUDIO_API_KEY=$(shell_quote "$LMSTUDIO_API_KEY_CHOISIE")
+fi
+if [[ -z "\${KB_MODELE_EXTRACTION:-}" ]]; then
+  export KB_MODELE_EXTRACTION=google/gemma-4-e4b
+fi
 EOF
+chmod 600 "$RACINE/config/local_settings.sh"
 echo "   LM Studio configuré : $LMSTUDIO_URL_CHOISIE"
+if [[ -n "$LMSTUDIO_API_KEY_CHOISIE" ]]; then
+    echo "   Token LM Studio configuré : oui"
+else
+    echo "   Token LM Studio configuré : non"
+fi
 echo "   Modèle LLM par défaut : google/gemma-4-e4b"
 
 if ! command -v ollama >/dev/null 2>&1; then
