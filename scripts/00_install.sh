@@ -6,7 +6,7 @@
 #   ./scripts/00_install.sh                # configure LM Studio + tout sauf Ollama
 #   ./scripts/00_install.sh --avec-ollama  # installe aussi Ollama pour les embeddings
 #
-# 100 % open-source : Python, SQLite, sqlite-vec, FTS5, markitdown, Ollama.
+# 100 % open-source : Python, SQLite, sqlite-vec, FTS5, LibreOffice, markitdown, Ollama.
 # =============================================================================
 set -euo pipefail
 ICI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,9 +15,9 @@ RACINE="$(dirname "$ICI")"
 echo "== [1/4] Paquets système =="
 if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update -qq
-    sudo apt-get install -y -qq python3 python3-venv python3-pip sqlite3 jq curl
+    sudo apt-get install -y -qq python3 python3-venv python3-pip sqlite3 jq curl libreoffice
 else
-    echo "[!] apt-get introuvable : installez python3, python3-venv, sqlite3, jq manuellement."
+    echo "[!] apt-get introuvable : installez python3, python3-venv, sqlite3, jq et LibreOffice/OpenOffice manuellement."
 fi
 
 echo "== [2/4] Environnement Python (.venv) =="

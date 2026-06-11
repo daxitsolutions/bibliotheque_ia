@@ -12,6 +12,7 @@ du graphe et executer des requetes SQL en lecture seule.
 ## Ce que ca fait
 
 - Convertit les documents de `data/sources/` en texte exploitable.
+- Convertit les fichiers Office en Markdown avant traitement.
 - Decoupe les documents en passages indexes.
 - Utilise un LLM local pour extraire les personnes, decisions, actions, risques,
   tests, procedures, modules, reunions, etc.
@@ -103,6 +104,20 @@ La passe de normalisation parcourt recursivement tout `data/sources/` et tente
 d'absorber chaque fichier lisible. Les fichiers binaires non textuels ou
 illisibles sont signales puis ignores.
 
+Les fichiers Office sont convertis avant traitement :
+
+```text
+Office -> data/work/office_md/*.md -> chunks -> extraction
+```
+
+La conversion Office utilise LibreOffice/OpenOffice en mode headless quand la
+commande `libreoffice`, `soffice` ou `openoffice` est disponible. Formats pris en
+charge : Word/Writer (`.doc`, `.docx`, `.odt`, `.rtf`...), Excel/Calc (`.xls`,
+`.xlsx`, `.ods`, `.csv`...), PowerPoint/Impress (`.ppt`, `.pptx`, `.odp`...).
+Le pipeline verifie d'abord que LibreOffice/OpenOffice repond correctement. Si
+l'installation locale est absente ou plante, il le signale une fois puis tente un
+fallback via `markitdown`, puis une lecture texte brute quand c'est possible.
+
 Lancez ensuite le pipeline complet :
 
 ```bash
@@ -142,7 +157,7 @@ Pour reprendre depuis une etape :
 
 Repere simple :
 
-- `10` convertit et decoupe les documents.
+- `10` convertit les fichiers Office en Markdown, puis decoupe les documents.
 - `20` extrait les entites et relations avec le LLM.
 - `30` fusionne les doublons et stabilise les identifiants.
 - `40` redige les fiches et calcule les embeddings si possible.
@@ -264,6 +279,7 @@ LMSTUDIO_API_KEY=sk-local-optionnel \
 - `config/local_settings.sh` : configuration locale creee par l'installation.
 - `data/sources/` : documents originaux.
 - `data/work/` : artefacts intermediaires.
+- `data/work/office_md/` : Markdown issu des conversions Office.
 - `data/kb.sqlite` : base construite.
 - `mcp/server.py` : serveur MCP.
 - `scripts/90_query.sh` : interrogation CLI.
