@@ -98,7 +98,10 @@ Deposez vos fichiers dans :
 data/sources/
 ```
 
-Les sous-dossiers sont autorises.
+Les sous-dossiers sont autorises, meme avec une arborescence profonde ou complexe.
+La passe de normalisation parcourt recursivement tout `data/sources/` et tente
+d'absorber chaque fichier lisible. Les fichiers binaires non textuels ou
+illisibles sont signales puis ignores.
 
 Lancez ensuite le pipeline complet :
 

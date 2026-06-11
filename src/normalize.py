@@ -1,8 +1,9 @@
 """Passe 10 — Normalisation + chunking.
 
-Parcourt data/sources, convertit chaque fichier en Markdown (markitdown pour les
-formats bureautiques), détecte titre/date/type, puis découpe en chunks structurés
-par sections. Incrémental : un fichier inchangé (même sha256) n'est pas reconverti.
+Parcourt récursivement data/sources, convertit chaque fichier lisible en Markdown
+(markitdown pour les formats bureautiques), détecte titre/date/type, puis découpe
+en chunks structurés par sections. Incrémental : un fichier inchangé (même sha256)
+n'est pas reconverti.
 
 Sorties :
     work/manifest.jsonl          un enregistrement par document
@@ -20,6 +21,7 @@ from common import (MAX_CHUNK, SOURCES, WORK, avertir, ecrire_jsonl, lire_jsonl,
 
 EXT_TEXTE = {".md", ".markdown", ".txt"}
 EXT_CONVERTIR = {".docx", ".pptx", ".xlsx", ".pdf", ".html", ".htm", ".csv", ".rtf", ".odt", ".doc"}
+EXT_IGNORE = {".DS_Store"}
 
 TYPES_DOCUMENT = [
     (r"compte[\s_-]*rendu|\bcr\b|\bpv\b|minutes|copil|coproj", "compte_rendu"),
@@ -53,9 +55,23 @@ def detecter_date(nom_fichier: str, debut_texte: str) -> str | None:
 def convertir_en_markdown(chemin: Path) -> str:
     if chemin.suffix.lower() in EXT_TEXTE:
         return chemin.read_text(encoding="utf-8", errors="replace")
-    from markitdown import MarkItDown  # import paresseux : lourd
-    resultat = MarkItDown().convert(str(chemin))
-    return resultat.text_content or ""
+    if chemin.suffix.lower() in EXT_CONVERTIR:
+        from markitdown import MarkItDown  # import paresseux : lourd
+        resultat = MarkItDown().convert(str(chemin))
+        return resultat.text_content or ""
+
+    try:
+        from markitdown import MarkItDown
+        resultat = MarkItDown().convert(str(chemin))
+        if resultat.text_content and resultat.text_content.strip():
+            return resultat.text_content
+    except Exception:
+        pass
+
+    donnees = chemin.read_bytes()
+    if b"\x00" in donnees[:4096]:
+        raise ValueError("fichier probablement binaire non textuel")
+    return donnees.decode("utf-8", errors="replace")
 
 
 def sections(md: str) -> list:
@@ -112,12 +128,11 @@ def principal() -> None:
     (WORK / "chunks").mkdir(parents=True, exist_ok=True)
 
     manifest, convertis, reutilises, ignores = [], 0, 0, 0
-    fichiers = sorted(p for p in SOURCES.rglob("*") if p.is_file() and not p.name.startswith("."))
+    fichiers = sorted(
+        p for p in SOURCES.rglob("*")
+        if p.is_file() and p.name not in EXT_IGNORE and not p.name.startswith(".")
+    )
     for chemin in fichiers:
-        ext = chemin.suffix.lower()
-        if ext not in EXT_TEXTE | EXT_CONVERTIR:
-            ignores += 1
-            continue
         relatif = str(chemin.relative_to(SOURCES))
         doc_id = "DOC-" + hashlib.sha1(relatif.encode("utf-8")).hexdigest()[:10]
         sha = sha256_fichier(chemin)
