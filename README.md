@@ -180,79 +180,26 @@ Les resultats sont du JSON borne, avec provenance quand elle existe.
 
 ## Comment utiliser la DB construite avec mon IA préférée après que les documents aient été absorbés
 
-Une fois `data/kb.sqlite` construit, le plus confortable est d'utiliser le serveur
-MCP fourni par le projet. Il expose des outils propres a l'IA, au lieu de lui
-donner seulement un fichier SQLite brut.
+Donnez a votre agent IA le fichier d'instructions suivant :
 
-Demarrez le serveur MCP :
+[docs/agent_instructions.md](docs/agent_instructions.md)
 
-```bash
-./mcp/run_mcp.sh
-```
+Ce fichier est redige comme un prompt d'exploitation pour agent. Il contient :
 
-Dans votre client IA compatible MCP, ajoutez un serveur de ce type :
+- le chemin exact du projet ;
+- la configuration MCP a utiliser ;
+- les commandes CLI exactes ;
+- le protocole de recherche obligatoire ;
+- les requetes SQLite utiles ;
+- les regles de reponse avec sources ;
+- les consignes de prudence pour ne pas inventer.
 
-```json
-{
-  "mcpServers": {
-    "bibliotheque-ia": {
-      "command": "/chemin/absolu/vers/bibliotheque_ia/mcp/run_mcp.sh"
-    }
-  }
-}
-```
-
-Remplacez `/chemin/absolu/vers/bibliotheque_ia` par le chemin reel du projet.
-Sur cette machine, c'est par exemple :
+Instruction simple a donner a votre IA :
 
 ```text
-/Users/Dax/Documents/GitHub/bibliotheque_ia
+Lis docs/agent_instructions.md et applique ces consignes pour repondre a mes
+questions a partir de la base Bibliotheque IA.
 ```
-
-L'IA aura alors acces a ces outils :
-
-- `schema` : comprendre l'ontologie et la volumetrie.
-- `recherche` : trouver les passages et noeuds pertinents.
-- `fiche` : lire tout ce que la base sait d'un noeud.
-- `voisins` : explorer le graphe autour d'un noeud.
-- `chemin` : expliquer le lien entre deux noeuds.
-- `requete_sql` : lancer une requete SQL en lecture seule.
-
-Exemples de questions a poser a votre IA apres branchement MCP :
-
-- "Commence par appeler `schema`, puis cherche les decisions liees a la reprise
-  des donnees fournisseurs."
-- "Trouve les risques qui bloquent un jalon et cite les sources."
-- "Pour la decision DEC-xxxx, donne-moi le contexte, les actions liees et les
-  tests qui la valident."
-- "Quel est le chemin entre cette procedure et ce module ?"
-
-Si votre IA ne supporte pas MCP, utilisez la CLI comme passerelle : demandez-lui
-quelle commande lancer, executez-la, puis collez-lui le JSON obtenu.
-
-Exemple :
-
-```bash
-./scripts/90_query.sh recherche "risques recette" --k 10
-```
-
-Pour une IA ou un outil qui sait lire directement SQLite, ouvrez :
-
-```text
-data/kb.sqlite
-```
-
-Tables principales :
-
-- `documents` : fichiers sources absorbes.
-- `chunks` + `chunks_fts` : passages et index plein texte.
-- `nodes` : entites canoniques.
-- `edges` : relations typees entre entites.
-- `mentions` : provenance des noeuds dans les passages.
-- `aliases` : variantes fusionnees.
-
-Mais pour un usage IA, MCP reste preferable : les resultats sont bornes,
-structures et orientes raisonnement.
 
 ## Changer de fournisseur LLM
 
@@ -281,6 +228,7 @@ LMSTUDIO_API_KEY=sk-local-optionnel \
 - `data/work/` : artefacts intermediaires.
 - `data/work/office_md/` : Markdown issu des conversions Office.
 - `data/kb.sqlite` : base construite.
+- `docs/agent_instructions.md` : consignes completes a donner a une IA.
 - `mcp/server.py` : serveur MCP.
 - `scripts/90_query.sh` : interrogation CLI.
 
