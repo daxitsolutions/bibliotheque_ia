@@ -7,15 +7,29 @@
 # Racine du projet (calculée automatiquement)
 export KB_RACINE="${KB_RACINE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
+# Surcharges locales créées par scripts/00_install.sh (non versionnées)
+if [[ -f "$KB_RACINE/config/local_settings.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "$KB_RACINE/config/local_settings.sh"
+fi
+
 # Chemins
 export KB_SOURCES="${KB_SOURCES:-$KB_RACINE/data/sources}"      # fichiers bruts en entrée
 export KB_WORK="${KB_WORK:-$KB_RACINE/data/work}"               # artefacts intermédiaires
 export KB_DB="${KB_DB:-$KB_RACINE/data/kb.sqlite}"              # base de connaissances finale
 export KB_ONTOLOGIE="${KB_ONTOLOGIE:-$KB_RACINE/config/ontologie.yaml}"
 
-# Modèles (Ollama, 100 % open-source)
+# Fournisseur LLM pour extraction + fiches + arbitrage :
+#   ollama   -> OLLAMA_URL/api/chat
+#   lmstudio -> LMSTUDIO_URL/chat/completions (API OpenAI-compatible)
+export KB_LLM_PROVIDER="${KB_LLM_PROVIDER:-lmstudio}"
 export OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
-export KB_MODELE_EXTRACTION="${KB_MODELE_EXTRACTION:-qwen3:14b}"   # extraction + fiches + arbitrage
+export LMSTUDIO_URL="${LMSTUDIO_URL:-http://localhost:1234/v1}"
+if [[ "$KB_LLM_PROVIDER" == "lmstudio" ]]; then
+  export KB_MODELE_EXTRACTION="${KB_MODELE_EXTRACTION:-google/gemma-4-e4b}"
+else
+  export KB_MODELE_EXTRACTION="${KB_MODELE_EXTRACTION:-qwen3:14b}"
+fi
 export KB_MODELE_EMBEDDING="${KB_MODELE_EMBEDDING:-bge-m3}"        # embeddings multilingues (1024 dim)
 export KB_DIM_EMBEDDING="${KB_DIM_EMBEDDING:-1024}"                # doit correspondre au modèle ci-dessus
 export KB_NUM_CTX="${KB_NUM_CTX:-8192}"                            # fenêtre de contexte Ollama

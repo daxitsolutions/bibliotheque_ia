@@ -17,8 +17,8 @@ from pathlib import Path
 from rapidfuzz import fuzz, process
 
 from common import (ARBITRAGE_LLM, SEUIL_ARBITRAGE, SEUIL_FUSION, WORK,
-                    appel_llm, avertir, charger_ontologie, ecrire_jsonl, log,
-                    node_id, normaliser, ollama_disponible)
+                    appel_llm, avertir, charger_ontologie, ecrire_jsonl,
+                    llm_disponible, log, node_id, normaliser)
 
 DOSSIER = WORK / "canon"
 
@@ -44,7 +44,7 @@ def arbitrer_llm(paires: list, journal: list) -> list:
     """Demande au LLM, par lots, si chaque paire désigne la même entité."""
     if not paires:
         return []
-    if not (ARBITRAGE_LLM and ollama_disponible()):
+    if not (ARBITRAGE_LLM and llm_disponible()):
         journal.append(f"Arbitrage LLM désactivé/indisponible : {len(paires)} paires laissées séparées")
         return [False] * len(paires)
     verdicts = []

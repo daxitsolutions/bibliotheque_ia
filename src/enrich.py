@@ -14,8 +14,8 @@ Sorties : work/enrich/fiches.jsonl, emb_chunks.jsonl, emb_nodes.jsonl
 from collections import defaultdict
 
 from common import (WORK, appel_llm, avertir, charger_ontologie, ecrire_jsonl,
-                    embeddings, lire_jsonl, log, ollama_disponible, sha_texte,
-                    vec_vers_b64)
+                    embeddings, embeddings_disponibles, lire_jsonl,
+                    llm_disponible, log, sha_texte, vec_vers_b64)
 
 DOSSIER = WORK / "enrich"
 MAX_CONTEXTE = 6000   # caractères de contexte fournis au LLM par fiche
@@ -56,8 +56,8 @@ def rediger_fiche(contexte: str) -> str:
 
 
 def principal() -> None:
-    if not ollama_disponible():
-        raise SystemExit("Ollama injoignable : impossible de calculer fiches et embeddings.")
+    if not llm_disponible():
+        raise SystemExit("LLM injoignable : impossible de calculer les fiches.")
     onto = charger_ontologie()
     noeuds = lire_jsonl(WORK / "canon" / "nodes.jsonl")
     mentions = lire_jsonl(WORK / "canon" / "mentions.jsonl")
@@ -103,6 +103,12 @@ def principal() -> None:
     log(f"Fiches : {redigees} rédigée(s), {len(fiches) - redigees} en cache")
 
     # --- 2. Embeddings des chunks (cache par empreinte du texte) -----------------------
+    if not embeddings_disponibles():
+        avertir("Ollama embeddings injoignable : fiches produites, embeddings ignores.")
+        ecrire_jsonl(DOSSIER / "emb_chunks.jsonl", [])
+        ecrire_jsonl(DOSSIER / "emb_nodes.jsonl", [])
+        return
+
     cache_chunks = {e["chunk_id"]: e for e in lire_jsonl(DOSSIER / "emb_chunks.jsonl")}
     emb_chunks, a_calculer = [], []
     for chunk_id, chunk in chunks_par_id.items():

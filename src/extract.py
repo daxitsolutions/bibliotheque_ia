@@ -7,7 +7,7 @@ Les resultats sont caches par empreinte du chunk.
 import json
 
 from common import (WORK, appel_llm, avertir, charger_ontologie, ecrire_jsonl,
-                    lire_jsonl, log, ollama_disponible, sha_texte)
+                    lire_jsonl, llm_disponible, log, sha_texte)
 
 DOSSIER = WORK / "extract"
 MAX_CHARS_PROMPT = 4500
@@ -90,8 +90,8 @@ def extraire_chunk(chunk: dict, systeme: str, onto: dict) -> dict:
 
 
 def principal() -> None:
-    if not ollama_disponible():
-        raise SystemExit("Ollama injoignable : impossible d'extraire les entites.")
+    if not llm_disponible():
+        raise SystemExit("LLM injoignable : impossible d'extraire les entites.")
     onto = charger_ontologie()
     systeme = prompt_systeme(onto)
     manifest = lire_jsonl(WORK / "manifest.jsonl")

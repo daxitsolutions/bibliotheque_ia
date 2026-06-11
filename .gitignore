@@ -6,3 +6,4 @@ __pycache__/
 data/kb.sqlite*
 data/rapport_validation.md
 data/work/
+config/local_settings.sh

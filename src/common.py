@@ -1,4 +1,4 @@
-"""Fonctions partagées du pipeline : configuration, ontologie, client Ollama, base SQLite."""
+"""Fonctions partagées du pipeline : configuration, ontologie, clients LLM, base SQLite."""
 import base64
 import hashlib
 import json
@@ -29,6 +29,8 @@ WORK = Path(os.environ.get("KB_WORK", RACINE / "data" / "work"))
 DB_PATH = Path(os.environ.get("KB_DB", RACINE / "data" / "kb.sqlite"))
 ONTOLOGIE_PATH = Path(os.environ.get("KB_ONTOLOGIE", RACINE / "config" / "ontologie.yaml"))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+LMSTUDIO_URL = os.environ.get("LMSTUDIO_URL", "http://localhost:1234/v1").rstrip("/")
+LLM_PROVIDER = os.environ.get("KB_LLM_PROVIDER", "ollama").lower()
 MODELE_EXTRACTION = os.environ.get("KB_MODELE_EXTRACTION", "qwen3:14b")
 MODELE_EMBEDDING = os.environ.get("KB_MODELE_EMBEDDING", "bge-m3")
 DIM_EMBEDDING = int(os.environ.get("KB_DIM_EMBEDDING", "1024"))
@@ -130,14 +132,31 @@ def sha_texte(texte: str) -> str:
     return hashlib.sha256(texte.encode("utf-8")).hexdigest()[:16]
 
 
-# --- Client Ollama -----------------------------------------------------------------
-def ollama_disponible() -> bool:
+# --- Clients LLM -----------------------------------------------------------------
+def _http_disponible(url: str) -> bool:
     if requests is None:
         return False
     try:
-        return requests.get(f"{OLLAMA_URL}/api/tags", timeout=3).ok
+        return requests.get(url, timeout=3).ok
     except Exception:
         return False
+
+
+def llm_disponible() -> bool:
+    """Indique si le fournisseur LLM configure repond."""
+    if LLM_PROVIDER == "lmstudio":
+        return _http_disponible(f"{LMSTUDIO_URL}/models")
+    return _http_disponible(f"{OLLAMA_URL}/api/tags")
+
+
+def embeddings_disponibles() -> bool:
+    """Les embeddings restent fournis par Ollama, meme si le chat utilise LM Studio."""
+    return _http_disponible(f"{OLLAMA_URL}/api/tags")
+
+
+def ollama_disponible() -> bool:
+    """Compatibilite historique : vrai si Ollama repond pour les embeddings."""
+    return embeddings_disponibles()
 
 
 def extraire_json(texte: str) -> dict:
@@ -152,29 +171,43 @@ def extraire_json(texte: str) -> dict:
 
 def appel_llm(messages: list, json_attendu: bool = True,
               temperature: float = 0.0, essais: int = 3):
-    """Appel chat Ollama, déterministe par défaut, avec relances exponentielles."""
+    """Appel chat au fournisseur configure, deterministe par defaut."""
     if requests is None:
-        raise RuntimeError("Le paquet Python 'requests' est requis pour appeler Ollama.")
-    corps = {
-        "model": MODELE_EXTRACTION,
-        "messages": messages,
-        "stream": False,
-        "think": False,
-        "options": {"temperature": temperature, "num_ctx": NUM_CTX},
-    }
-    if json_attendu:
-        corps["format"] = "json"
+        raise RuntimeError("Le paquet Python 'requests' est requis pour appeler le LLM.")
     derniere = None
     for i in range(essais):
         try:
-            r = requests.post(f"{OLLAMA_URL}/api/chat", json=corps, timeout=900)
-            r.raise_for_status()
-            contenu = r.json()["message"]["content"]
+            if LLM_PROVIDER == "lmstudio":
+                corps = {
+                    "model": MODELE_EXTRACTION,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": temperature,
+                    "max_tokens": NUM_CTX,
+                }
+                if json_attendu:
+                    corps["response_format"] = {"type": "json_object"}
+                r = requests.post(f"{LMSTUDIO_URL}/chat/completions", json=corps, timeout=900)
+                r.raise_for_status()
+                contenu = r.json()["choices"][0]["message"]["content"]
+            else:
+                corps = {
+                    "model": MODELE_EXTRACTION,
+                    "messages": messages,
+                    "stream": False,
+                    "think": False,
+                    "options": {"temperature": temperature, "num_ctx": NUM_CTX},
+                }
+                if json_attendu:
+                    corps["format"] = "json"
+                r = requests.post(f"{OLLAMA_URL}/api/chat", json=corps, timeout=900)
+                r.raise_for_status()
+                contenu = r.json()["message"]["content"]
             return extraire_json(contenu) if json_attendu else contenu.strip()
         except Exception as e:  # réseau, JSON malformé, surcharge...
             derniere = e
             time.sleep(2 * (i + 1))
-    raise RuntimeError(f"Échec LLM après {essais} essais : {derniere}")
+    raise RuntimeError(f"Échec LLM ({LLM_PROVIDER}) après {essais} essais : {derniere}")
 
 
 def embeddings(textes: list, lot: int = 32) -> list:
