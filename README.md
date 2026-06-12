@@ -20,7 +20,7 @@ du graphe et executer des requetes SQL en lecture seule.
 - Cree un graphe de connaissances dans SQLite : `nodes` + `edges`.
 - Ajoute une recherche plein texte FTS5.
 - Ajoute des fiches de synthese par noeud.
-- Ajoute des embeddings si Ollama et `sqlite-vec` sont disponibles.
+- Ajoute une recherche semantique (embeddings via LM Studio ou Ollama + `sqlite-vec`).
 - Expose la base par CLI et par serveur MCP pour une IA.
 
 ## Pourquoi
@@ -40,6 +40,8 @@ de verite ; `data/kb.sqlite` est un index enrichi que l'on peut regenerer.
 
 ## Installation rapide
 
+Prerequis : Python >= 3.10 (les paquets `markitdown` et `mcp` l'exigent).
+
 Par defaut, le LLM utilise est LM Studio avec le modele :
 
 ```text
@@ -50,6 +52,17 @@ L'installation demande l'URL de l'API LM Studio et un token optionnel.
 
 ```bash
 ./scripts/00_install.sh
+```
+
+`00_install.sh` cible Ubuntu (paquets via `apt`). Sur macOS ou sans `apt`,
+installez les dependances a la main (en remplacant `python3.12` par votre
+interpreteur >= 3.10) :
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+# LibreOffice (conversion Office) : optionnel, ex. `brew install --cask libreoffice`
+# puis creez config/local_settings.sh avec votre URL LM Studio (voir ci-dessous).
 ```
 
 Valeurs par defaut :
@@ -63,8 +76,6 @@ KB_MODELE_EXTRACTION=google/gemma-4-e4b
 
 Le choix est enregistre dans `config/local_settings.sh`, ignore par Git et cree
 avec des permissions restrictives.
-
-Prerequis : Python >= 3.10 (les paquets `markitdown` et `mcp` l'exigent).
 
 ### Embeddings
 
@@ -178,7 +189,8 @@ Pour reprendre depuis une etape :
 
 Repere simple :
 
-- `10` convertit les fichiers Office en Markdown, puis decoupe les documents.
+- `10` convertit les fichiers Office en Markdown, decoupe les documents et elague
+  les artefacts orphelins.
 - `20` extrait les entites et relations avec le LLM.
 - `30` fusionne les doublons et stabilise les identifiants.
 - `40` redige les fiches et calcule les embeddings si possible.
@@ -270,7 +282,8 @@ Robustesse a l'echelle de milliers de documents :
 - chaque fichier est isole : un document piege (binaire, corrompu, conversion qui
   plante) est signale puis ignore, jamais fatal pour le corpus ;
 - la normalisation ecrit un manifest incremental : un arret apres des heures ne
-  reperd pas tout ;
+  reperd pas tout, et elle elague les artefacts des documents disparus
+  (sources supprimees/renommees) pour ne pas polluer la base ;
 - les fichiers JSONL intermediaires tolerent les lignes corrompues ;
 - le chargement est atomique : la base existante n'est jamais detruite si le
   chargement echoue, et les lignes incoherentes sont ignorees et comptees ;
