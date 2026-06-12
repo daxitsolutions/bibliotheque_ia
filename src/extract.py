@@ -6,7 +6,7 @@ Les resultats sont caches par empreinte du chunk.
 """
 import json
 
-from common import (WORK, appel_llm, avertir, charger_ontologie, ecrire_jsonl,
+from common import (WORK, appel_llm, charger_ontologie, executer_passe,
                     lire_jsonl, llm_disponible, log, sha_texte)
 
 DOSSIER = WORK / "extract"
@@ -89,7 +89,32 @@ def extraire_chunk(chunk: dict, systeme: str, onto: dict) -> dict:
     return nettoyer(brut, chunk["chunk_id"], onto)
 
 
-def principal() -> None:
+CHECKPOINT_TOUS_LES = 50  # chunks : flush du cache document en cours de route
+
+
+def _charger_cache(sortie) -> dict:
+    """Cache d'extraction d'un document, tolérant aux fichiers corrompus."""
+    if not sortie.exists():
+        return {}
+    try:
+        return json.loads(sortie.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError, OSError):
+        return {}
+
+
+def _ecrire_doc(sortie, doc_id, chunks_sortie) -> None:
+    entites = [e for r in chunks_sortie for e in r["entites"]]
+    relations = [r for bloc in chunks_sortie for r in bloc["relations"]]
+    sortie.write_text(json.dumps({
+        "doc_id": doc_id,
+        "chunks": chunks_sortie,
+        "entites": entites,
+        "relations": relations,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return len(entites), len(relations)
+
+
+def principal(passe) -> None:
     if not llm_disponible():
         raise SystemExit("LLM injoignable : impossible d'extraire les entites.")
     onto = charger_ontologie()
@@ -98,43 +123,52 @@ def principal() -> None:
     if not manifest:
         raise SystemExit("Manifest absent : lancez d'abord scripts/10_normalize.sh")
     DOSSIER.mkdir(parents=True, exist_ok=True)
-    total_chunks, nouveaux = 0, 0
 
     for doc in manifest:
         chunks = lire_jsonl(WORK / "chunks" / f"{doc['doc_id']}.jsonl")
         sortie = DOSSIER / f"{doc['doc_id']}.json"
-        cache = json.loads(sortie.read_text(encoding="utf-8")) if sortie.exists() else {}
+        cache = _charger_cache(sortie)
         resultats = {r["chunk_id"]: r for r in cache.get("chunks", [])}
         chunks_sortie = []
+        depuis_flush = 0
 
         for chunk in chunks:
-            total_chunks += 1
             empreinte = sha_texte(chunk["texte"])
             en_cache = resultats.get(chunk["chunk_id"])
             if en_cache and en_cache.get("sha") == empreinte:
                 chunks_sortie.append(en_cache)
+                passe.compter("chunks_caches")
                 continue
             try:
                 extrait = extraire_chunk(chunk, systeme, onto)
+                passe.compter("chunks_extraits")
             except Exception as e:
-                avertir(f"Extraction en echec pour {chunk['chunk_id']} ({e})")
+                passe.erreur(f"Extraction en échec : {chunk['chunk_id']}", str(e))
                 extrait = {"chunk_id": chunk["chunk_id"], "entites": [], "relations": []}
+                passe.compter("chunks_en_echec")
             extrait["sha"] = empreinte
             chunks_sortie.append(extrait)
-            nouveaux += 1
+            depuis_flush += 1
+            # Checkpoint : un kill au milieu d'un gros document ne reperd pas les
+            # appels LLM déjà effectués.
+            if depuis_flush >= CHECKPOINT_TOUS_LES:
+                _ecrire_doc(sortie, doc["doc_id"], chunks_sortie)
+                depuis_flush = 0
 
-        entites = [e for r in chunks_sortie for e in r["entites"]]
-        relations = [r for bloc in chunks_sortie for r in bloc["relations"]]
-        sortie.write_text(json.dumps({
-            "doc_id": doc["doc_id"],
-            "chunks": chunks_sortie,
-            "entites": entites,
-            "relations": relations,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        log(f"  [OK] {doc['doc_id']} : {len(entites)} entite(s), {len(relations)} relation(s)")
+        try:
+            nb_entites, nb_relations = _ecrire_doc(sortie, doc["doc_id"], chunks_sortie)
+        except OSError as e:
+            passe.erreur(f"Écriture extraction impossible : {doc['doc_id']}", str(e))
+            continue
+        passe.compter("documents")
+        passe.compter("entites", nb_entites)
+        passe.compter("relations", nb_relations)
+        log(f"  [OK] {doc['doc_id']} : {nb_entites} entite(s), {nb_relations} relation(s)")
 
-    log(f"Extraction terminee : {nouveaux} chunk(s) traite(s), {total_chunks - nouveaux} en cache")
+    log(f"Extraction terminée : {passe.compteurs['chunks_extraits']} chunk(s) traité(s), "
+        f"{passe.compteurs['chunks_caches']} en cache, "
+        f"{passe.compteurs['chunks_en_echec']} en échec")
 
 
 if __name__ == "__main__":
-    principal()
+    executer_passe("20_extract", principal)

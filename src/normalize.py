@@ -19,8 +19,10 @@ import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 
-from common import (MAX_CHUNK, SOURCES, WORK, avertir, ecrire_jsonl, lire_jsonl,
-                    log, sha256_fichier)
+from common import (MAX_CHUNK, SOURCES, WORK, avertir, ecrire_jsonl,
+                    executer_passe, lire_jsonl, log, sha256_fichier)
+
+CHECKPOINT_TOUS_LES = 50  # docs : fréquence d'écriture du manifest partiel
 
 EXT_TEXTE = {".md", ".markdown", ".txt"}
 EXT_OFFICE = {
@@ -291,64 +293,113 @@ def decouper(md: str, maxi: int) -> list:
     return chunks
 
 
-def principal() -> None:
+def traiter_fichier(chemin, doc_id, sha, relatif, passe):
+    """Convertit + découpe un fichier. Renvoie l'entrée manifest, ou None si ignoré."""
+    chemin_md = WORK / "markdown" / f"{doc_id}.md"
+    md = convertir_en_markdown(chemin, doc_id)
+    if not md.strip():
+        passe.avertissement(f"Document vide après conversion : {relatif}")
+        return None
+
+    chemin_md.write_text(md, encoding="utf-8")
+    m_titre = re.search(r"^#\s+(.+)$", md, re.M)
+    titre = m_titre.group(1).strip() if m_titre else chemin.stem.replace("_", " ")
+    chunks = [
+        {"chunk_id": f"{doc_id}#{i:03d}", "ordre": i,
+         "chemin_titres": chemin_titres, "texte": texte}
+        for i, (chemin_titres, texte) in enumerate(decouper(md, MAX_CHUNK))
+    ]
+    ecrire_jsonl(WORK / "chunks" / f"{doc_id}.jsonl", chunks)
+    log(f"  [OK] {relatif} -> {doc_id} ({len(chunks)} chunks)")
+    return {
+        "doc_id": doc_id,
+        "chemin_source": relatif,
+        "titre": titre,
+        "type_document": detecter_type(chemin.name, md),
+        "date_document": detecter_date(chemin.name, md),
+        "sha256": sha,
+        "nb_chunks": len(chunks),
+    }
+
+
+def principal(passe) -> None:
     if not SOURCES.exists():
         raise SystemExit(f"Répertoire sources absent : {SOURCES}")
     precedent = {m["doc_id"]: m for m in lire_jsonl(WORK / "manifest.jsonl")}
     (WORK / "markdown").mkdir(parents=True, exist_ok=True)
     (WORK / "chunks").mkdir(parents=True, exist_ok=True)
 
-    manifest, convertis, reutilises, ignores = [], 0, 0, 0
+    manifest = []
     fichiers = sorted(
         p for p in SOURCES.rglob("*")
         if p.is_file() and p.name not in EXT_IGNORE and not p.name.startswith(".")
     )
+    passe.compter("fichiers_trouves", len(fichiers))
+
     for chemin in fichiers:
         relatif = str(chemin.relative_to(SOURCES))
         doc_id = "DOC-" + hashlib.sha1(relatif.encode("utf-8")).hexdigest()[:10]
-        sha = sha256_fichier(chemin)
+        try:
+            sha = sha256_fichier(chemin)
+        except OSError as e:
+            passe.erreur(f"Fichier illisible : {relatif}", str(e))
+            continue
         chemin_md = WORK / "markdown" / f"{doc_id}.md"
 
         if doc_id in precedent and precedent[doc_id]["sha256"] == sha and chemin_md.exists():
             manifest.append(precedent[doc_id])
-            reutilises += 1
+            passe.compter("inchanges")
             continue
 
         try:
-            md = convertir_en_markdown(chemin, doc_id)
+            entree = traiter_fichier(chemin, doc_id, sha, relatif, passe)
         except Exception as e:
-            avertir(f"Conversion impossible : {relatif} ({e})")
+            # Isolation totale : un fichier piégé ne fait jamais tomber le corpus.
+            passe.erreur(f"Conversion impossible : {relatif}", str(e))
+            passe.compter("ignores")
             continue
-        if not md.strip():
-            avertir(f"Document vide après conversion : {relatif}")
+        if entree is None:
+            passe.compter("ignores")
             continue
-
-        chemin_md.write_text(md, encoding="utf-8")
-        m_titre = re.search(r"^#\s+(.+)$", md, re.M)
-        titre = m_titre.group(1).strip() if m_titre else chemin.stem.replace("_", " ")
-        entree = {
-            "doc_id": doc_id,
-            "chemin_source": relatif,
-            "titre": titre,
-            "type_document": detecter_type(chemin.name, md),
-            "date_document": detecter_date(chemin.name, md),
-            "sha256": sha,
-        }
-        chunks = [
-            {"chunk_id": f"{doc_id}#{i:03d}", "ordre": i,
-             "chemin_titres": chemin_titres, "texte": texte}
-            for i, (chemin_titres, texte) in enumerate(decouper(md, MAX_CHUNK))
-        ]
-        ecrire_jsonl(WORK / "chunks" / f"{doc_id}.jsonl", chunks)
-        entree["nb_chunks"] = len(chunks)
         manifest.append(entree)
-        convertis += 1
-        log(f"  [OK] {relatif} -> {doc_id} ({len(chunks)} chunks, {entree['type_document']})")
+        passe.compter("convertis")
+        passe.compter("chunks", entree["nb_chunks"])
+
+        # Checkpoint incrémental : un kill après des heures ne perd pas tout.
+        if passe.compteurs["convertis"] % CHECKPOINT_TOUS_LES == 0:
+            ecrire_jsonl(WORK / "manifest.jsonl", manifest)
 
     ecrire_jsonl(WORK / "manifest.jsonl", manifest)
-    log(f"Normalisation : {convertis} converti(s), {reutilises} inchangé(s), "
-        f"{ignores} ignoré(s) — {len(manifest)} documents au total")
+    elaguer_orphelins({m["doc_id"] for m in manifest}, passe)
+    log(f"Normalisation : {passe.compteurs['convertis']} converti(s), "
+        f"{passe.compteurs['inchanges']} inchangé(s), {passe.compteurs['ignores']} ignoré(s), "
+        f"{passe.compteurs['artefacts_elagues']} orphelin(s) supprimé(s) "
+        f"— {len(manifest)} documents au total")
+
+
+def elaguer_orphelins(ids_valides: set, passe) -> None:
+    """Supprime les artefacts des documents disparus (sources supprimées/renommées).
+
+    Sans cela, à l'échelle de milliers de documents qui évoluent, les extractions
+    orphelines pollueraient la canonisation (canonize lit TOUT extract/) et les
+    chunks orphelins déclencheraient des embeddings inutiles.
+    """
+    for dossier, motif in (
+        (WORK / "markdown", "DOC-*.md"),
+        (WORK / "chunks", "DOC-*.jsonl"),
+        (WORK / "extract", "DOC-*.json"),
+        (WORK / "office_md", "DOC-*.md"),
+    ):
+        if not dossier.exists():
+            continue
+        for fichier in dossier.glob(motif):
+            if fichier.stem not in ids_valides:
+                try:
+                    fichier.unlink()
+                    passe.compter("artefacts_elagues")
+                except OSError as e:
+                    passe.avertissement(f"Orphelin non supprimé : {fichier.name}", str(e))
 
 
 if __name__ == "__main__":
-    principal()
+    executer_passe("10_normalize", principal)

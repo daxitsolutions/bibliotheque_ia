@@ -31,9 +31,19 @@ if [[ "$KB_LLM_PROVIDER" == "lmstudio" ]]; then
 else
   export KB_MODELE_EXTRACTION="${KB_MODELE_EXTRACTION:-qwen3:14b}"
 fi
-export KB_MODELE_EMBEDDING="${KB_MODELE_EMBEDDING:-bge-m3}"        # embeddings multilingues (1024 dim)
-export KB_DIM_EMBEDDING="${KB_DIM_EMBEDDING:-1024}"                # doit correspondre au modèle ci-dessus
-export KB_NUM_CTX="${KB_NUM_CTX:-8192}"                            # fenêtre de contexte Ollama
+# Embeddings : par défaut sur le même fournisseur que le LLM.
+#   lmstudio -> LMSTUDIO_URL/embeddings (modèle nomic, 768 dim)
+#   ollama   -> OLLAMA_URL/api/embed    (modèle bge-m3, 1024 dim)
+# KB_MODELE_EMBEDDING et KB_DIM_EMBEDDING doivent toujours correspondre au modèle.
+export KB_EMBEDDING_PROVIDER="${KB_EMBEDDING_PROVIDER:-$KB_LLM_PROVIDER}"
+if [[ "$KB_EMBEDDING_PROVIDER" == "lmstudio" ]]; then
+  export KB_MODELE_EMBEDDING="${KB_MODELE_EMBEDDING:-text-embedding-nomic-embed-text-v1.5}"
+  export KB_DIM_EMBEDDING="${KB_DIM_EMBEDDING:-768}"
+else
+  export KB_MODELE_EMBEDDING="${KB_MODELE_EMBEDDING:-bge-m3}"
+  export KB_DIM_EMBEDDING="${KB_DIM_EMBEDDING:-1024}"
+fi
+export KB_NUM_CTX="${KB_NUM_CTX:-8192}"                            # fenêtre de contexte
 
 # Découpage et canonisation
 export KB_MAX_CHUNK="${KB_MAX_CHUNK:-2500}"        # taille max d'un chunk (caractères)

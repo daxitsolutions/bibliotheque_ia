@@ -13,9 +13,9 @@ Sorties : work/enrich/fiches.jsonl, emb_chunks.jsonl, emb_nodes.jsonl
 """
 from collections import defaultdict
 
-from common import (WORK, appel_llm, avertir, charger_ontologie, ecrire_jsonl,
-                    embeddings, embeddings_disponibles, lire_jsonl,
-                    llm_disponible, log, sha_texte, vec_vers_b64)
+from common import (WORK, appel_llm, charger_ontologie, ecrire_jsonl,
+                    embeddings, embeddings_disponibles, executer_passe,
+                    lire_jsonl, llm_disponible, log, sha_texte, vec_vers_b64)
 
 DOSSIER = WORK / "enrich"
 MAX_CONTEXTE = 6000   # caractères de contexte fournis au LLM par fiche
@@ -55,7 +55,7 @@ def rediger_fiche(contexte: str) -> str:
     return appel_llm([{"role": "user", "content": prompt}], json_attendu=False)
 
 
-def principal() -> None:
+def principal(passe) -> None:
     if not llm_disponible():
         raise SystemExit("LLM injoignable : impossible de calculer les fiches.")
     onto = charger_ontologie()
@@ -88,7 +88,8 @@ def principal() -> None:
         try:
             fiche = rediger_fiche(contexte)
         except Exception as e:
-            avertir(f"Fiche en échec pour {noeud['node_id']} ({e})")
+            passe.erreur(f"Fiche en échec : {noeud['node_id']}", str(e))
+            passe.compter("fiches_en_echec")
             continue
         fiches.append({"node_id": noeud["node_id"], "sha": empreinte, "fiche": fiche})
         redigees += 1
@@ -100,56 +101,71 @@ def principal() -> None:
             ])
     ecrire_jsonl(DOSSIER / "fiches.jsonl", fiches)
     fiches_par_noeud = {f["node_id"]: f["fiche"] for f in fiches}
+    passe.compter("fiches_redigees", redigees)
+    passe.compter("fiches_en_cache", len(fiches) - redigees)
     log(f"Fiches : {redigees} rédigée(s), {len(fiches) - redigees} en cache")
 
     # --- 2. Embeddings des chunks (cache par empreinte du texte) -----------------------
     if not embeddings_disponibles():
-        avertir("Ollama embeddings injoignable : fiches produites, embeddings ignores.")
-        ecrire_jsonl(DOSSIER / "emb_chunks.jsonl", [])
-        ecrire_jsonl(DOSSIER / "emb_nodes.jsonl", [])
+        passe.avertissement("Embeddings ignorés : Ollama injoignable",
+                            "base fonctionnelle en mode plein texte + graphe")
+        # Préserver d'éventuels embeddings déjà calculés plutôt que de les écraser à vide.
+        if not (DOSSIER / "emb_chunks.jsonl").exists():
+            ecrire_jsonl(DOSSIER / "emb_chunks.jsonl", [])
+        if not (DOSSIER / "emb_nodes.jsonl").exists():
+            ecrire_jsonl(DOSSIER / "emb_nodes.jsonl", [])
         return
 
-    cache_chunks = {e["chunk_id"]: e for e in lire_jsonl(DOSSIER / "emb_chunks.jsonl")}
-    emb_chunks, a_calculer = [], []
-    for chunk_id, chunk in chunks_par_id.items():
-        empreinte = sha_texte(chunk["texte"])
-        en_cache = cache_chunks.get(chunk_id)
-        if en_cache and en_cache.get("sha") == empreinte:
-            emb_chunks.append(en_cache)
-        else:
-            a_calculer.append((chunk_id, empreinte, chunk))
-    for debut in range(0, len(a_calculer), 64):
-        lot = a_calculer[debut:debut + 64]
-        vecteurs = embeddings([f"{c['chemin_titres']}\n{c['texte']}" for _, _, c in lot])
-        emb_chunks.extend(
-            {"chunk_id": cid, "sha": emp, "vec": vec_vers_b64(v)}
-            for (cid, emp, _), v in zip(lot, vecteurs)
-        )
-        log(f"  embeddings chunks : {min(debut + 64, len(a_calculer))}/{len(a_calculer)} nouveaux")
-    ecrire_jsonl(DOSSIER / "emb_chunks.jsonl", emb_chunks)
-
-    # --- 3. Embeddings des nœuds (nom + type + fiche) -----------------------------------
-    cache_noeuds = {e["node_id"]: e for e in lire_jsonl(DOSSIER / "emb_nodes.jsonl")}
-    emb_noeuds, a_calculer = [], []
-    for noeud in noeuds:
-        texte = f"{noeud['type']} : {noeud['nom']}\n{fiches_par_noeud.get(noeud['node_id'], '')[:1200]}"
-        empreinte = sha_texte(texte)
-        en_cache = cache_noeuds.get(noeud["node_id"])
-        if en_cache and en_cache.get("sha") == empreinte:
-            emb_noeuds.append(en_cache)
-        else:
-            a_calculer.append((noeud["node_id"], empreinte, texte))
-    for debut in range(0, len(a_calculer), 64):
-        lot = a_calculer[debut:debut + 64]
-        vecteurs = embeddings([t for _, _, t in lot])
-        emb_noeuds.extend(
-            {"node_id": nid, "sha": emp, "vec": vec_vers_b64(v)}
-            for (nid, emp, _), v in zip(lot, vecteurs)
-        )
-        log(f"  embeddings nœuds : {min(debut + 64, len(a_calculer))}/{len(a_calculer)} nouveaux")
-    ecrire_jsonl(DOSSIER / "emb_nodes.jsonl", emb_noeuds)
+    emb_chunks = _vectoriser(
+        passe, "chunks", DOSSIER / "emb_chunks.jsonl",
+        [(cid, sha_texte(c["texte"]), f"{c['chemin_titres']}\n{c['texte']}")
+         for cid, c in chunks_par_id.items()],
+        cle="chunk_id")
+    emb_noeuds = _vectoriser(
+        passe, "nœuds", DOSSIER / "emb_nodes.jsonl",
+        [(n["node_id"],
+          sha_texte(f"{n['type']} : {n['nom']}\n{fiches_par_noeud.get(n['node_id'], '')[:1200]}"),
+          f"{n['type']} : {n['nom']}\n{fiches_par_noeud.get(n['node_id'], '')[:1200]}")
+         for n in noeuds],
+        cle="node_id")
+    passe.compter("chunks_vectorises", len(emb_chunks))
+    passe.compter("noeuds_vectorises", len(emb_noeuds))
     log(f"Enrichissement terminé : {len(emb_chunks)} chunks et {len(emb_noeuds)} nœuds vectorisés")
 
 
+def _vectoriser(passe, libelle, chemin_sortie, items, cle):
+    """Calcule les embeddings par lots, en réutilisant le cache et en isolant chaque lot.
+
+    Un lot qui échoue (timeout, surcharge) n'interrompt plus toute la passe : les
+    éléments du lot restent à recalculer au prochain run, les autres sont conservés.
+    """
+    cache = {e[cle]: e for e in lire_jsonl(chemin_sortie)}
+    resultats, a_calculer = [], []
+    for identifiant, empreinte, texte in items:
+        en_cache = cache.get(identifiant)
+        if en_cache and en_cache.get("sha") == empreinte:
+            resultats.append(en_cache)
+        else:
+            a_calculer.append((identifiant, empreinte, texte))
+
+    for debut in range(0, len(a_calculer), 64):
+        lot = a_calculer[debut:debut + 64]
+        try:
+            vecteurs = embeddings([t for _, _, t in lot])
+        except Exception as e:
+            passe.erreur(f"Lot d'embeddings {libelle} en échec", str(e))
+            passe.compter(f"lots_embeddings_{libelle}_en_echec")
+            continue
+        resultats.extend(
+            {cle: ident, "sha": emp, "vec": vec_vers_b64(v)}
+            for (ident, emp, _), v in zip(lot, vecteurs)
+        )
+        log(f"  embeddings {libelle} : {min(debut + 64, len(a_calculer))}/{len(a_calculer)} nouveaux")
+        # Sauvegarde de progression : un crash ultérieur ne reperd pas les lots déjà calculés.
+        ecrire_jsonl(chemin_sortie, resultats)
+    ecrire_jsonl(chemin_sortie, resultats)
+    return resultats
+
+
 if __name__ == "__main__":
-    principal()
+    executer_passe("40_enrich", principal)

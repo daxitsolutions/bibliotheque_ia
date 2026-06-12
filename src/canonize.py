@@ -17,8 +17,8 @@ from pathlib import Path
 from rapidfuzz import fuzz, process
 
 from common import (ARBITRAGE_LLM, SEUIL_ARBITRAGE, SEUIL_FUSION, WORK,
-                    appel_llm, avertir, charger_ontologie, ecrire_jsonl,
-                    llm_disponible, log, node_id, normaliser)
+                    appel_llm, charger_ontologie, ecrire_jsonl, ecrire_texte,
+                    executer_passe, llm_disponible, log, node_id, normaliser)
 
 DOSSIER = WORK / "canon"
 
@@ -71,7 +71,7 @@ def arbitrer_llm(paires: list, journal: list) -> list:
     return verdicts
 
 
-def principal() -> None:
+def principal(passe) -> None:
     onto = charger_ontologie()
     titres = tuple(onto.get("canonisation", {}).get("titres_a_retirer", []))
     extraits = sorted((WORK / "extract").glob("DOC-*.json"))
@@ -83,8 +83,14 @@ def principal() -> None:
     groupes = {}  # (type, norme) -> {noms Counter, attributs, mentions[]}
     relations_brutes = []
     for chemin in extraits:
-        donnees = json.loads(chemin.read_text(encoding="utf-8"))
-        for e in donnees["entites"]:
+        try:
+            donnees = json.loads(chemin.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError, OSError) as e:
+            # Une extraction corrompue ne doit jamais bloquer tout le corpus.
+            passe.erreur(f"Extraction illisible ignorée : {chemin.name}", str(e))
+            continue
+        passe.compter("documents_lus")
+        for e in donnees.get("entites", []):
             norme = normaliser(e["nom"], titres if e["type"] == "personne" else ())
             if not norme:
                 continue
@@ -95,7 +101,7 @@ def principal() -> None:
                 g["attributs"].setdefault(str(k), v)
             if e.get("chunk_id"):
                 g["mentions"].append((e["chunk_id"], e.get("citation", "")))
-        relations_brutes.extend(donnees["relations"])
+        relations_brutes.extend(donnees.get("relations", []))
 
     # --- 2. Fusions : équivalences forcées, puis similarité floue ------------------
     uf = UnionFind()
@@ -177,17 +183,22 @@ def principal() -> None:
                                     "attributs": {"implicite": True}})
             return nid
 
+        type_r = r["type"]
+        contrainte = onto["relations"].get(type_r)
+        if contrainte is None:
+            # Type de relation hors ontologie (cache d'une ancienne version...) : ignoré.
+            passe.compter("relations_hors_ontologie")
+            continue
         sid = resoudre(r["source_type"], r["source_nom"])
         cid = resoudre(r["cible_type"], r["cible_nom"])
         if sid == cid:
             continue
-        type_r = r["type"]
-        contrainte = onto["relations"][type_r]
         if ("*" not in contrainte["sources"] and r["source_type"] not in contrainte["sources"]) or \
            ("*" not in contrainte["cibles"] and r["cible_type"] not in contrainte["cibles"]):
             journal.append(f"Contrainte violée : {r['source_type']} -{type_r}-> "
                            f"{r['cible_type']} ; rétrogradée en liee_a "
                            f"({r['source_nom'][:40]} / {r['cible_nom'][:40]})")
+            passe.compter("contraintes_violees")
             type_r = "liee_a"
         cle_e = (sid, type_r, cid, r.get("chunk_id", ""))
         if cle_e in vues:
@@ -202,11 +213,22 @@ def principal() -> None:
     ecrire_jsonl(DOSSIER / "mentions.jsonl", mentions_sortie)
     ecrire_jsonl(DOSSIER / "edges.jsonl", edges)
     if journal:
-        (DOSSIER / "journal.log").write_text("\n".join(journal), encoding="utf-8")
+        ecrire_texte(DOSSIER / "journal.log", "\n".join(journal))
+    noeuds_implicites = sum(1 for n in noeuds.values() if n.get("attributs", {}).get("implicite"))
+    passe.compter("noeuds", len(noeuds))
+    passe.compter("noeuds_implicites", noeuds_implicites)
+    passe.compter("aretes", len(edges))
+    passe.compter("alias", len(alias_sortie))
+    passe.compter("paires_arbitrees", len(a_arbitrer))
+    passe.compter("fusions_llm", sum(1 for v in verdicts if v))
+    if noeuds_implicites:
+        passe.avertissement(
+            f"{noeuds_implicites} nœud(s) implicite(s) créés par des relations "
+            "sans entité extraite correspondante")
     log(f"Canonisation : {len(noeuds)} nœuds, {len(edges)} arêtes, "
         f"{len(alias_sortie)} alias, {len(a_arbitrer)} paires arbitrées "
         f"({sum(1 for v in verdicts if v)} fusions LLM)")
 
 
 if __name__ == "__main__":
-    principal()
+    executer_passe("30_canonize", principal)

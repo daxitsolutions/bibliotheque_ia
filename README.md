@@ -64,14 +64,28 @@ KB_MODELE_EXTRACTION=google/gemma-4-e4b
 Le choix est enregistre dans `config/local_settings.sh`, ignore par Git et cree
 avec des permissions restrictives.
 
-Si vous voulez aussi Ollama pour les embeddings :
+Prerequis : Python >= 3.10 (les paquets `markitdown` et `mcp` l'exigent).
+
+### Embeddings
+
+Les embeddings (recherche semantique) peuvent etre fournis par le meme serveur
+LM Studio, via son endpoint `/embeddings` OpenAI-compatible. Chargez un modele
+d'embeddings dans LM Studio et configurez :
+
+```text
+KB_EMBEDDING_PROVIDER=lmstudio
+KB_MODELE_EMBEDDING=text-embedding-nomic-embed-text-v1.5
+KB_DIM_EMBEDDING=768          # doit correspondre au modele choisi
+```
+
+Alternative : Ollama (`KB_EMBEDDING_PROVIDER=ollama`, modele `bge-m3`, 1024 dim) :
 
 ```bash
 ./scripts/00_install.sh --avec-ollama
 ```
 
-Ollama est optionnel. Sans embeddings, la base fonctionne quand meme en mode
-plein texte + graphe.
+Les embeddings sont optionnels. S'ils sont indisponibles, la base fonctionne
+quand meme en mode plein texte + graphe (signale dans le rapport).
 
 ## Preparer LM Studio
 
@@ -130,11 +144,18 @@ La base finale est creee ici :
 data/kb.sqlite
 ```
 
-Le rapport qualite est cree ici :
+Le rapport d'execution consolide est cree ici :
 
 ```text
-data/rapport_validation.md
+data/rapport.md
 ```
+
+Il agrege les journaux de toutes les passes (`data/work/journal/*.json`) et l'etat
+de la base : statut global, deroule de chaque passe, problemes a examiner,
+volumetrie et qualite. Il est genere meme si une passe echoue, pour rester
+analysable. Un echec de passe interrompt le pipeline mais ne detruit jamais la
+base existante : le chargement construit une base temporaire puis la permute de
+facon atomique.
 
 ## Reprendre une etape
 
@@ -161,8 +182,8 @@ Repere simple :
 - `20` extrait les entites et relations avec le LLM.
 - `30` fusionne les doublons et stabilise les identifiants.
 - `40` redige les fiches et calcule les embeddings si possible.
-- `50` reconstruit `data/kb.sqlite`.
-- `60` controle la qualite.
+- `50` reconstruit `data/kb.sqlite` (build temporaire + permutation atomique).
+- `60` agrege les journaux et produit `data/rapport.md`.
 
 ## Interroger la base en CLI
 
@@ -234,15 +255,28 @@ LMSTUDIO_API_KEY=sk-local-optionnel \
 
 ## Qualite et limites
 
-`data/rapport_validation.md` signale les points a verifier :
+`data/rapport.md` signale les points a verifier :
 
-- types hors ontologie ;
-- aretes pendantes ;
-- noeuds isoles ;
-- documents sans extraction ;
-- couverture vectorielle ;
+- statut global et statut de chaque passe (succes / avertissements / echec) ;
+- compteurs par passe (documents, chunks, entites, fusions, rejets...) ;
+- problemes a examiner, regroupes par passe (conversions impossibles, extractions
+  en echec, lignes rejetees...) ;
+- types hors ontologie, aretes pendantes, noeuds isoles, documents sans
+  extraction, couverture vectorielle ;
 - echantillons de fiches a relire.
 
-Le LLM peut mal extraire ou mal fusionner certaines informations. Le rapport de
-validation sert justement a relire un echantillon, ajuster `config/ontologie.yaml`
-ou ajouter des equivalences de canonisation, puis reconstruire la base.
+Robustesse a l'echelle de milliers de documents :
+
+- chaque fichier est isole : un document piege (binaire, corrompu, conversion qui
+  plante) est signale puis ignore, jamais fatal pour le corpus ;
+- la normalisation ecrit un manifest incremental : un arret apres des heures ne
+  reperd pas tout ;
+- les fichiers JSONL intermediaires tolerent les lignes corrompues ;
+- le chargement est atomique : la base existante n'est jamais detruite si le
+  chargement echoue, et les lignes incoherentes sont ignorees et comptees ;
+- toute passe ecrit son journal `data/work/journal/<passe>.json` meme en cas de
+  plantage, et le rapport est produit dans tous les cas.
+
+Le LLM peut mal extraire ou mal fusionner certaines informations. Le rapport sert
+justement a relire un echantillon, ajuster `config/ontologie.yaml` ou ajouter des
+equivalences de canonisation, puis reconstruire la base.
