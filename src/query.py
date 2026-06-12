@@ -3,6 +3,8 @@
 Fonctions partagées par la CLI (scripts/90_query.sh) et le serveur MCP :
   - schema()                     : ontologie + volumétrie (auto-description)
   - recherche(question, ...)     : hybride vecteurs + plein texte, fusion RRF
+  - dossier(sujet, ...)          : tous les documents/passages liés à un sujet
+                                   (directs + indirects), avec document d'origine
   - fiche(node_id)               : tout ce que la base sait d'un nœud
   - voisins(node_id, profondeur) : voisinage du graphe
   - chemin(a, b)                 : plus court chemin entre deux nœuds
@@ -15,8 +17,9 @@ import json
 import re
 from collections import defaultdict, deque
 
-from common import (avertir, charger_ontologie, embeddings, ollama_disponible,
-                    ouvrir_db, table_existe, vec_vers_blob)
+from common import (avertir, charger_ontologie, embeddings,
+                    embeddings_disponibles, ouvrir_db, table_existe,
+                    vec_vers_blob)
 
 RRF_K = 60
 
@@ -92,7 +95,7 @@ def recherche(question: str, k: int = 8, type_noeud: str | None = None) -> dict:
     """Recherche hybride : renvoie passages ET nœuds pertinents, avec provenance."""
     conn = ouvrir_db(lecture_seule=True)
     vecteur, mode = None, "plein texte seul"
-    if table_existe(conn, "chunks_vec") and ollama_disponible():
+    if table_existe(conn, "chunks_vec") and embeddings_disponibles():
         try:
             vecteur = embeddings([question])[0]
             mode = "hybride (sémantique + plein texte)"
@@ -147,7 +150,8 @@ def recherche(question: str, k: int = 8, type_noeud: str | None = None) -> dict:
                        "score": round(score, 4)})
     conn.close()
     return {"question": question, "mode": mode, "noeuds": noeuds, "passages": passages,
-            "suite": "Approfondissez avec fiche(node_id), voisins(node_id) ou chemin(a, b)."}
+            "suite": "Approfondissez avec fiche(node_id), voisins(node_id) ou chemin(a, b). "
+                     "Pour TOUS les documents liés à un sujet, utilisez dossier(sujet)."}
 
 
 # --- Fiche d'identité d'un nœud ------------------------------------------------------------
@@ -283,6 +287,220 @@ def chemin(depart: str, arrivee: str, profondeur_max: int = 5) -> dict:
                         "ids": {"de": e["de"], "vers": e["vers"]}} for e in etapes]}
 
 
+# --- Dossier complet : tout ce qui est lié à un sujet -------------------------------------
+# Plafonds : exhaustif mais borné. Toute troncature est signalée dans "limites".
+DOSSIER_MAX_NOEUDS = 600        # taille max du sous-graphe exploré
+DOSSIER_MAX_DOCUMENTS = 200     # documents restitués
+DOSSIER_MAX_PASSAGES_DOC = 15   # passages détaillés par document (le total reste compté)
+
+
+def _amorces(conn, sujet: str, k: int) -> tuple[dict, list]:
+    """Nœuds-graines du sujet (résolution directe + recherche hybride) et passages directs."""
+    seeds = {}  # node_id -> score
+    direct = _resoudre_node_id(conn, sujet)
+    if direct:
+        seeds[direct["node_id"]] = 1.0
+
+    vecteur = None
+    if table_existe(conn, "chunks_vec") and embeddings_disponibles():
+        try:
+            vecteur = embeddings([sujet])[0]
+        except Exception as e:
+            avertir(f"Embedding du sujet impossible : {e}")
+
+    listes_noeuds, listes_chunks = [], [_fts(conn, sujet, k * 6)]
+    if vecteur:
+        listes_chunks.append(_vec(conn, "chunks_vec", vecteur, k * 6))
+        listes_noeuds.append(_vec(conn, "nodes_vec", vecteur, k * 4))
+    motif = f"%{sujet.strip()[:60]}%"
+    lexicaux = conn.execute(
+        "SELECT rowid FROM nodes WHERE nom LIKE ? "
+        "UNION SELECT n.rowid FROM nodes n JOIN aliases a ON a.node_id = n.node_id "
+        "WHERE a.alias LIKE ? LIMIT ?", (motif, motif, k)).fetchall()
+    listes_noeuds.append([r["rowid"] for r in lexicaux])
+
+    for rowid, score in sorted(_rrf(listes_noeuds).items(), key=lambda kv: -kv[1])[:k]:
+        r = conn.execute("SELECT node_id FROM nodes WHERE rowid = ?", (rowid,)).fetchone()
+        if r:
+            seeds.setdefault(r["node_id"], round(score, 4))
+
+    chunks_directs = []
+    for rowid, _ in sorted(_rrf(listes_chunks).items(), key=lambda kv: -kv[1])[:k * 2]:
+        r = conn.execute("SELECT chunk_id FROM chunks WHERE rowid = ?", (rowid,)).fetchone()
+        if r:
+            chunks_directs.append(r["chunk_id"])
+    return seeds, chunks_directs
+
+
+def _expansion(conn, seeds: set, profondeur: int) -> tuple[dict, dict, bool]:
+    """BFS depuis les graines. Renvoie distances, parents (pour expliquer les liens) et troncature."""
+    distance = {s: 0 for s in seeds}
+    parent = {s: None for s in seeds}
+    frontiere = set(seeds)
+    tronque = False
+    for niveau in range(1, profondeur + 1):
+        if not frontiere or len(distance) >= DOSSIER_MAX_NOEUDS:
+            break
+        suivante = set()
+        for a in _aretes_de(conn, frontiere):
+            for courant, voisin, sens in (
+                (a["source_id"], a["cible_id"], "->"),
+                (a["cible_id"], a["source_id"], "<-")):
+                if courant in frontiere and voisin not in distance:
+                    if len(distance) >= DOSSIER_MAX_NOEUDS:
+                        tronque = True
+                        break
+                    distance[voisin] = niveau
+                    parent[voisin] = (courant, a["type"], sens)
+                    suivante.add(voisin)
+        frontiere = suivante
+    return distance, parent, tronque
+
+
+def _chemin_lien(parent, noms, node_id) -> list:
+    """Remonte la chaîne de relations d'une graine jusqu'à node_id (pourquoi c'est lié)."""
+    etapes, courant = [], node_id
+    garde = 0
+    while parent.get(courant) and garde < 12:
+        prec, rel, sens = parent[courant]
+        etapes.append({"de": noms.get(prec, prec), "relation": rel,
+                       "sens": sens, "vers": noms.get(courant, courant)})
+        courant = prec
+        garde += 1
+    etapes.reverse()
+    return etapes
+
+
+def dossier(sujet: str, profondeur: int = 2, k: int = 6) -> dict:
+    """Dossier complet d'un sujet : document d'origine, TOUS les documents liés
+    (directs et indirects) et tous les passages, avec la raison de chaque lien.
+
+    `sujet` peut être une question libre (« règle qui convertit un chiffre en
+    texte »), un nom exact ou un identifiant de nœud.
+    """
+    profondeur = max(1, min(int(profondeur), 3))
+    conn = ouvrir_db(lecture_seule=True)
+    limites = []
+
+    seeds, chunks_directs = _amorces(conn, sujet, k)
+    if not seeds and not chunks_directs:
+        conn.close()
+        return {"sujet": sujet, "amorces": [], "documents": [],
+                "message": "Aucun nœud ni passage trouvé pour ce sujet. "
+                           "Reformulez ou utilisez recherche()."}
+
+    distance, parent, tronque_graphe = _expansion(conn, set(seeds), profondeur)
+    if tronque_graphe:
+        limites.append(f"Sous-graphe borné à {DOSSIER_MAX_NOEUDS} nœuds : "
+                       "réduisez la profondeur pour un périmètre plus précis.")
+
+    # Noms des nœuds atteints (affichage + explication des liens)
+    ids = list(distance)
+    noms = {}
+    for debut in range(0, len(ids), 400):
+        lot = ids[debut:debut + 400]
+        marqueurs = ",".join("?" * len(lot))
+        for r in conn.execute(
+                f"SELECT node_id, type, nom FROM nodes WHERE node_id IN ({marqueurs})", lot):
+            noms[r["node_id"]] = f"[{r['type']}] {r['nom']}"
+
+    # Tous les passages mentionnant un nœud du sous-graphe, + les passages directs du texte
+    docs = {}  # doc_id -> agrégat
+    passages_total = 0
+
+    def ajouter_passage(chunk_id, node_id, dist):
+        nonlocal passages_total
+        r = conn.execute(
+            "SELECT c.chunk_id, c.chemin_titres, c.texte, d.doc_id, d.titre, "
+            "d.type_document, d.date_document, d.chemin_source FROM chunks c "
+            "JOIN documents d ON d.doc_id = c.doc_id WHERE c.chunk_id = ?", (chunk_id,)).fetchone()
+        if not r:
+            return
+        doc = docs.setdefault(r["doc_id"], {
+            "doc_id": r["doc_id"], "titre": r["titre"], "type": r["type_document"],
+            "date": r["date_document"], "source": r["chemin_source"],
+            "distance": dist, "passages": [], "_chunks": set(), "_noeuds": set()})
+        doc["distance"] = min(doc["distance"], dist)
+        if node_id:
+            doc["_noeuds"].add(node_id)
+        if r["chunk_id"] not in doc["_chunks"]:
+            doc["_chunks"].add(r["chunk_id"])
+            passages_total += 1
+            doc["passages"].append({
+                "chunk_id": r["chunk_id"], "section": r["chemin_titres"],
+                "extrait": r["texte"][:500] + ("…" if len(r["texte"]) > 500 else "")})
+
+    for debut in range(0, len(ids), 400):
+        lot = ids[debut:debut + 400]
+        marqueurs = ",".join("?" * len(lot))
+        for m in conn.execute(
+                f"SELECT node_id, chunk_id FROM mentions WHERE node_id IN ({marqueurs})", lot):
+            ajouter_passage(m["chunk_id"], m["node_id"], distance[m["node_id"]])
+    for chunk_id in chunks_directs:
+        ajouter_passage(chunk_id, None, 0)
+
+    # Document d'origine : le plus ancien parmi ceux qui mentionnent une graine
+    dates = [(d["date"], d) for d in docs.values()
+             if d["distance"] == 0 and d["date"]]
+    origine = min(dates, key=lambda kv: kv[0])[1] if dates else None
+    if not origine and any(d["distance"] == 0 for d in docs.values()):
+        limites.append("Aucune date détectée sur les documents définissant le sujet : "
+                       "document d'origine indéterminé (voir la chronologie).")
+
+    # Mise en forme des documents : rôle + raison du lien (chemin de relations)
+    sortie_docs = []
+    for d in sorted(docs.values(), key=lambda x: (x["distance"], x["date"] or "9999")):
+        noeud_pivot = min(d["_noeuds"], key=lambda n: distance.get(n, 9),
+                          default=None) if d["_noeuds"] else None
+        role = ("définit / mentionne directement le sujet" if d["distance"] == 0
+                else f"lié indirectement (distance {d['distance']})")
+        entree = {
+            "doc_id": d["doc_id"], "titre": d["titre"], "type": d["type"],
+            "date": d["date"], "source": d["source"], "distance": d["distance"],
+            "role": role,
+            "nb_passages": len(d["passages"]),
+            "passages": d["passages"][:DOSSIER_MAX_PASSAGES_DOC],
+        }
+        if d["distance"] > 0 and noeud_pivot:
+            entree["lien"] = {
+                "via_noeud": noms.get(noeud_pivot, noeud_pivot),
+                "chemin": _chemin_lien(parent, noms, noeud_pivot),
+            }
+        if len(d["passages"]) > DOSSIER_MAX_PASSAGES_DOC:
+            entree["passages_tronques"] = len(d["passages"]) - DOSSIER_MAX_PASSAGES_DOC
+        sortie_docs.append(entree)
+
+    if len(sortie_docs) > DOSSIER_MAX_DOCUMENTS:
+        limites.append(f"{len(sortie_docs)} documents trouvés, "
+                       f"{DOSSIER_MAX_DOCUMENTS} restitués (les plus proches du sujet).")
+        sortie_docs = sortie_docs[:DOSSIER_MAX_DOCUMENTS]
+
+    amorces = [{"node_id": s, "libelle": noms.get(s, s), "score": sc}
+               for s, sc in sorted(seeds.items(), key=lambda kv: -kv[1])]
+    chronologie = [{"date": d["date"], "titre": d["titre"], "doc_id": d["doc_id"],
+                    "role": ("origine" if origine and d["doc_id"] == origine["doc_id"]
+                             else ("définit" if d["distance"] == 0 else "lié"))}
+                   for d in sorted(docs.values(), key=lambda x: (x["date"] or "9999"))
+                   if d["date"]]
+    conn.close()
+
+    return {
+        "sujet": sujet,
+        "profondeur": profondeur,
+        "amorces": amorces,
+        "document_origine": ({"doc_id": origine["doc_id"], "titre": origine["titre"],
+                              "date": origine["date"], "source": origine["source"],
+                              "pourquoi": "document daté le plus ancien définissant le sujet"}
+                             if origine else None),
+        "chronologie": chronologie,
+        "couverture": {"documents": len(sortie_docs), "passages": passages_total,
+                       "noeuds_du_sujet": len(distance), "profondeur": profondeur},
+        "documents": sortie_docs,
+        "limites": limites or ["Aucune (résultat complet dans les bornes par défaut)."],
+        "suite": "Détaillez un nœud avec fiche(node_id) ou un lien avec chemin(a, b).",
+    }
+
+
 # --- CLI ------------------------------------------------------------------------------------------
 def principal() -> None:
     p = argparse.ArgumentParser(description="Interroger la base de connaissances")
@@ -299,6 +517,10 @@ def principal() -> None:
     pc = sous.add_parser("chemin")
     pc.add_argument("depart")
     pc.add_argument("arrivee")
+    pd = sous.add_parser("dossier")
+    pd.add_argument("sujet")
+    pd.add_argument("--profondeur", type=int, default=2)
+    pd.add_argument("--k", type=int, default=6)
     sous.add_parser("schema")
     args = p.parse_args()
     if args.commande == "recherche":
@@ -309,6 +531,8 @@ def principal() -> None:
         resultat = voisins(args.node_id, args.profondeur)
     elif args.commande == "chemin":
         resultat = chemin(args.depart, args.arrivee)
+    elif args.commande == "dossier":
+        resultat = dossier(args.sujet, args.profondeur, args.k)
     else:
         resultat = schema()
     print(json.dumps(resultat, ensure_ascii=False, indent=2))

@@ -30,6 +30,33 @@ Ordre recommande :
 5. Explore les voisins ou chemins si la question porte sur des liens.
 6. Reponds en citant les identifiants et sources disponibles.
 
+### Demande de type « tout ce qui est lie a X » : utilise `dossier`
+
+Des que la demande attend l'EXHAUSTIVITE des documents et passages lies a un
+sujet — par exemple :
+
+- « trouve-moi la regle qui convertit un chiffre en texte » ;
+- « tous les documents lies a cette decision » ;
+- « ou cette regle a-t-elle ete validee / decidee, et depuis quand ? » ;
+- « donne-moi le dossier complet de ce sujet » ;
+
+appelle `dossier(sujet)` en PREMIER outil metier. Une seule operation renvoie :
+
+- le ou les noeuds du sujet (`amorces`) ;
+- le **document d'origine** (le plus ancien qui definit le sujet) et sa date ;
+- la **chronologie** des documents ;
+- **tous les documents lies, directs ET indirects** (ex. un PV de comite qui
+  valide la regle apparait, meme s'il ne nomme pas la regle mot pour mot), chacun
+  avec sa `distance`, son `role`, ses passages, et pour les liens indirects le
+  `chemin` de relations qui explique POURQUOI il est lie ;
+- le champ `limites` : s'il est non vide, certains resultats sont bornes —
+  relance avec une `profondeur` ou un `sujet` plus precis, ou complete avec
+  `voisins`/`requete_sql`, et signale-le a l'utilisateur.
+
+Restitue a l'utilisateur l'INTEGRALITE des documents listes par `dossier` (titre,
+date, source, role), pas seulement les mieux classes. C'est le but : ne jamais
+omettre un document lie.
+
 ## Si tu as acces au serveur MCP
 
 Utilise MCP en priorite. C'est l'interface prevue pour les agents.
@@ -50,6 +77,8 @@ Outils MCP disponibles :
 
 - `schema()`
 - `recherche(question, k=8, type_noeud=null)`
+- `dossier(sujet, profondeur=2, k=6)` — **dossier complet d'un sujet** : document
+  d'origine + tous les documents lies directs/indirects + passages, en un appel.
 - `fiche(node_id)`
 - `voisins(node_id, profondeur=1)`
 - `chemin(depart, arrivee, profondeur_max=5)`
@@ -61,7 +90,10 @@ Pour une nouvelle conversation documentaire :
 
 1. Appelle `schema()`.
 2. Resume mentalement les types de noeuds et relations disponibles.
-3. Appelle `recherche(question=<question utilisateur>, k=8)`.
+3. Si la demande attend TOUS les documents/passages lies a un sujet (voir
+   « Demande de type tout ce qui est lie a X »), appelle directement
+   `dossier(sujet=<sujet>, profondeur=2)` et restitue l'integralite du dossier.
+   Sinon, appelle `recherche(question=<question utilisateur>, k=8)`.
 4. Si des noeuds pertinents remontent, appelle `fiche(node_id)` sur les 1 a 3
    meilleurs noeuds.
 5. Si la question demande un contexte, appelle `voisins(node_id, profondeur=1)`
@@ -70,6 +102,25 @@ Pour une nouvelle conversation documentaire :
 7. Reponds avec une synthese courte, les identifiants utiles et les sources.
 
 ### Exemples MCP
+
+Question utilisateur (exhaustivite des liens — cas typique) :
+
+```text
+Trouve-moi la regle qui convertit un chiffre en texte, depuis quand elle existe
+et tous les documents qui s'y rapportent (y compris sa validation en comite).
+```
+
+Appels a faire :
+
+```text
+schema()
+dossier(sujet="regle conversion d'un chiffre en texte", profondeur=2)
+```
+
+Puis, dans la reponse : annonce le document d'origine et sa date, liste TOUS les
+documents du dossier (directs et indirects) avec pour chaque lien indirect le
+`chemin` qui le justifie, et signale `limites` si non vide. Approfondis au besoin
+un noeud avec `fiche(node_id)`.
 
 Question utilisateur :
 
@@ -174,6 +225,12 @@ Si la base existe, commence par le schema :
 ./scripts/90_query.sh schema
 ```
 
+Dossier complet d'un sujet (tous les documents lies, directs et indirects) :
+
+```bash
+./scripts/90_query.sh dossier "SUJET_OU_QUESTION" --profondeur 2
+```
+
 Recherche generale :
 
 ```bash
@@ -212,7 +269,9 @@ Trouver un chemin :
 ### Protocole CLI obligatoire
 
 1. Lance `./scripts/90_query.sh schema`.
-2. Lance `./scripts/90_query.sh recherche "<question>" --k 8`.
+2. Pour « tout ce qui est lie a X », lance d'abord
+   `./scripts/90_query.sh dossier "<sujet>" --profondeur 2` et restitue tout le
+   dossier. Sinon, lance `./scripts/90_query.sh recherche "<question>" --k 8`.
 3. Repere les `node_id` dans le JSON.
 4. Lance `fiche` sur les meilleurs `node_id`.
 5. Lance `voisins` si tu dois expliquer le contexte.
@@ -311,6 +370,16 @@ Reponse attendue :
 - si les resultats sont faibles, dis-le clairement et propose une recherche plus
   precise.
 
+Pour une reponse issue de `dossier` :
+
+- annonce d'abord le **document d'origine** et sa date (ou signale qu'aucune date
+  n'a ete detectee) ;
+- donne la **chronologie** des documents ;
+- liste **TOUS** les documents lies (titre, date, source), sans en omettre, en
+  separant les liens directs des liens indirects et en expliquant chaque lien
+  indirect par son `chemin` de relations ;
+- si `limites` est non vide, indique-le et propose d'elargir la `profondeur`.
+
 Format conseille :
 
 ```text
@@ -335,5 +404,7 @@ Limites :
 - Ne retourne pas un dump brut de dizaines de lignes si une synthese suffit.
 - Pour une question vague, commence large avec `recherche`, puis raffine par type.
 - Pour une question de lien ou d'impact, utilise le graphe (`voisins` ou `chemin`).
+- Pour « tout ce qui est lie a X » / un dossier complet, utilise `dossier` et ne
+  laisse de cote aucun document qu'il renvoie.
 - Pour une question de comptage, utilise SQL.
 - Pour une question de preuve, priorise les passages et citations.

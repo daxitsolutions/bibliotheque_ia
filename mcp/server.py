@@ -1,8 +1,8 @@
 """Serveur MCP de la base de connaissances (transport stdio).
 
-Expose la base à un client MCP via six outils : schema, recherche, fiche,
-voisins, chemin et requete_sql (lecture seule). Toutes les réponses sont des
-structures JSON bornées avec provenance, conçues pour être consommées par une IA.
+Expose la base à un client MCP via sept outils : schema, recherche, dossier,
+fiche, voisins, chemin et requete_sql (lecture seule). Toutes les réponses sont
+des structures JSON bornées avec provenance, conçues pour être consommées par une IA.
 
 Lancement : mcp/run_mcp.sh (ou .venv/bin/python mcp/server.py)
 """
@@ -63,6 +63,20 @@ def chemin(depart: str, arrivee: str, profondeur_max: int = 5) -> dict:
     type et le sens de chaque relation traversée. Répond à « quel est le lien
     entre X et Y ? »."""
     return q.chemin(depart, arrivee, profondeur_max=max(1, min(profondeur_max, 6)))
+
+
+@mcp.tool()
+def dossier(sujet: str, profondeur: int = 2, k: int = 6) -> dict:
+    """Dossier COMPLET d'un sujet en un seul appel : le document d'origine (le plus
+    ancien qui définit le sujet), TOUS les documents liés directement ET
+    indirectement (ex. un PV de comité qui valide une règle), et tous les passages,
+    avec la raison de chaque lien (chemin de relations dans le graphe).
+
+    À utiliser dès qu'on demande « tout ce qui concerne X », « tous les documents
+    liés à X », « la règle qui ... et où elle a été validée/décidée ». `sujet` peut
+    être une question libre, un nom exact ou un identifiant de nœud. `profondeur`
+    (1 à 3) règle l'ampleur des liens indirects suivis."""
+    return q.dossier(sujet, profondeur=max(1, min(profondeur, 3)), k=max(1, min(k, 12)))
 
 
 @mcp.tool()

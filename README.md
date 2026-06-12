@@ -30,6 +30,8 @@ points d'entree dans la connaissance :
 
 - `schema` pour comprendre ce qu'il y a dans la base ;
 - `recherche` pour trouver les passages et les concepts pertinents ;
+- `dossier` pour rassembler en un appel TOUS les documents et passages lies a un
+  sujet (directs et indirects), avec le document d'origine et la chronologie ;
 - `fiche` pour lire une synthese courte d'un objet ;
 - `voisins` pour explorer ce qui est lie ;
 - `chemin` pour expliquer le lien entre deux objets ;
@@ -204,12 +206,19 @@ Quelques exemples :
 ```bash
 ./scripts/90_query.sh schema
 ./scripts/90_query.sh recherche "reprise des donnees fournisseurs"
+./scripts/90_query.sh dossier "regle de conversion d'un chiffre en texte" --profondeur 2
 ./scripts/90_query.sh fiche DEC-xxxxxxxx
 ./scripts/90_query.sh voisins DEC-xxxxxxxx --profondeur 2
 ./scripts/90_query.sh chemin DEC-xxxxxxxx TST-yyyyyyyy
 ```
 
 Les resultats sont du JSON borne, avec provenance quand elle existe.
+
+`dossier` est le point d'entree pour « trouve-moi tout ce qui concerne X » : il
+part du sujet, remonte au document qui le definit en premier (le plus ancien
+date), puis collecte tous les documents lies directement ou indirectement dans le
+graphe (par exemple un PV de comite qui valide une regle), chacun avec ses
+passages et, pour les liens indirects, le chemin de relations qui le justifie.
 
 ## Comment utiliser la DB construite avec mon IA préférée après que les documents aient été absorbés
 
@@ -284,6 +293,15 @@ Robustesse a l'echelle de milliers de documents :
 - la normalisation ecrit un manifest incremental : un arret apres des heures ne
   reperd pas tout, et elle elague les artefacts des documents disparus
   (sources supprimees/renommees) pour ne pas polluer la base ;
+- detection de changement par metadonnees (mtime + taille) avant de re-hasher un
+  fichier : a l'echelle de milliers de gros documents, les fichiers inchanges ne
+  sont pas relus inutilement ;
+- le cache d'extraction, de fiches et d'embeddings est invalide non seulement par
+  le contenu mais aussi par la **logique** (prompt, ontologie, modele LLM, modele
+  d'embedding) : changer un prompt ou un modele recalcule automatiquement, et
+  uniquement, ce qui est concerne ;
+- un appel LLM en echec n'est jamais cache comme un resultat vide : le chunk
+  concerne est reessaye au run suivant, sans bloquer les chunks reussis ;
 - les fichiers JSONL intermediaires tolerent les lignes corrompues ;
 - le chargement est atomique : la base existante n'est jamais detruite si le
   chargement echoue, et les lignes incoherentes sont ignorees et comptees ;

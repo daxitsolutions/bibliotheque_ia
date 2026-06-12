@@ -13,9 +13,10 @@ Sorties : work/enrich/fiches.jsonl, emb_chunks.jsonl, emb_nodes.jsonl
 """
 from collections import defaultdict
 
-from common import (WORK, appel_llm, charger_ontologie, ecrire_jsonl,
-                    embeddings, embeddings_disponibles, executer_passe,
-                    lire_jsonl, llm_disponible, log, sha_texte, vec_vers_b64)
+from common import (MODELE_EMBEDDING, MODELE_EXTRACTION, WORK, appel_llm,
+                    charger_ontologie, ecrire_jsonl, embeddings,
+                    embeddings_disponibles, executer_passe, lire_jsonl,
+                    llm_disponible, log, sha_texte, vec_vers_b64)
 
 DOSSIER = WORK / "enrich"
 MAX_CONTEXTE = 6000   # caractères de contexte fournis au LLM par fiche
@@ -44,15 +45,18 @@ def contexte_du_noeud(noeud, mentions, chunks_par_id):
     return "\n\n".join(morceaux)
 
 
+PROMPT_FICHE = (
+    "Rédige une fiche de synthèse en Markdown (150 mots maximum) pour l'entité "
+    "décrite par les extraits ci-dessous. Structure : une ligne **Résumé**, puis "
+    "**Contexte** (2-3 phrases), puis **Points clés** (3 puces maximum). "
+    "Ne mentionne que ce qui figure dans les extraits, n'invente rien, "
+    "n'ajoute aucun préambule.\n\n"
+)
+
+
 def rediger_fiche(contexte: str) -> str:
-    prompt = (
-        "Rédige une fiche de synthèse en Markdown (150 mots maximum) pour l'entité "
-        "décrite par les extraits ci-dessous. Structure : une ligne **Résumé**, puis "
-        "**Contexte** (2-3 phrases), puis **Points clés** (3 puces maximum). "
-        "Ne mentionne que ce qui figure dans les extraits, n'invente rien, "
-        "n'ajoute aucun préambule.\n\n" + contexte
-    )
-    return appel_llm([{"role": "user", "content": prompt}], json_attendu=False)
+    return appel_llm([{"role": "user", "content": PROMPT_FICHE + contexte}],
+                     json_attendu=False)
 
 
 def principal(passe) -> None:
@@ -73,14 +77,15 @@ def principal(passe) -> None:
     for m in mentions:
         mentions_par_noeud[m["node_id"]].append(m)
 
-    # --- 1. Fiches de synthèse (cache par empreinte du contexte) ----------------------
+    # --- 1. Fiches de synthèse (cache par contexte + prompt + modèle) ----------------
+    version_fiche = sha_texte(PROMPT_FICHE + "\x00" + MODELE_EXTRACTION)
     cache_fiches = {f["node_id"]: f for f in lire_jsonl(DOSSIER / "fiches.jsonl")}
     fiches, redigees = [], 0
     candidats = [n for n in noeuds if onto["noeuds"][n["type"]].get("fiche")]
     for i, noeud in enumerate(candidats, 1):
         contexte = contexte_du_noeud(noeud, mentions_par_noeud.get(noeud["node_id"], []),
                                      chunks_par_id)
-        empreinte = sha_texte(contexte)
+        empreinte = sha_texte(contexte + "\x00" + version_fiche)
         en_cache = cache_fiches.get(noeud["node_id"])
         if en_cache and en_cache.get("sha") == empreinte:
             fiches.append(en_cache)
@@ -105,9 +110,11 @@ def principal(passe) -> None:
     passe.compter("fiches_en_cache", len(fiches) - redigees)
     log(f"Fiches : {redigees} rédigée(s), {len(fiches) - redigees} en cache")
 
-    # --- 2. Embeddings des chunks (cache par empreinte du texte) -----------------------
+    # --- 2. Embeddings (cache par texte + modèle d'embedding) -------------------------
+    # Inclure le modèle dans l'empreinte : changer de modèle (donc de dimension)
+    # re-calcule tous les vecteurs au lieu de réutiliser des vecteurs incompatibles.
     if not embeddings_disponibles():
-        passe.avertissement("Embeddings ignorés : Ollama injoignable",
+        passe.avertissement("Embeddings ignorés : fournisseur injoignable",
                             "base fonctionnelle en mode plein texte + graphe")
         # Préserver d'éventuels embeddings déjà calculés plutôt que de les écraser à vide.
         if not (DOSSIER / "emb_chunks.jsonl").exists():
@@ -116,15 +123,19 @@ def principal(passe) -> None:
             ecrire_jsonl(DOSSIER / "emb_nodes.jsonl", [])
         return
 
+    def emp_emb(texte):
+        return sha_texte(texte + "\x00" + MODELE_EMBEDDING)
+
     emb_chunks = _vectoriser(
         passe, "chunks", DOSSIER / "emb_chunks.jsonl",
-        [(cid, sha_texte(c["texte"]), f"{c['chemin_titres']}\n{c['texte']}")
+        [(cid, emp_emb(f"{c['chemin_titres']}\n{c['texte']}"),
+          f"{c['chemin_titres']}\n{c['texte']}")
          for cid, c in chunks_par_id.items()],
         cle="chunk_id")
     emb_noeuds = _vectoriser(
         passe, "nœuds", DOSSIER / "emb_nodes.jsonl",
         [(n["node_id"],
-          sha_texte(f"{n['type']} : {n['nom']}\n{fiches_par_noeud.get(n['node_id'], '')[:1200]}"),
+          emp_emb(f"{n['type']} : {n['nom']}\n{fiches_par_noeud.get(n['node_id'], '')[:1200]}"),
           f"{n['type']} : {n['nom']}\n{fiches_par_noeud.get(n['node_id'], '')[:1200]}")
          for n in noeuds],
         cle="node_id")

@@ -6,8 +6,8 @@ Les resultats sont caches par empreinte du chunk.
 """
 import json
 
-from common import (WORK, appel_llm, charger_ontologie, executer_passe,
-                    lire_jsonl, llm_disponible, log, sha_texte)
+from common import (MODELE_EXTRACTION, WORK, appel_llm, charger_ontologie,
+                    executer_passe, lire_jsonl, llm_disponible, log, sha_texte)
 
 DOSSIER = WORK / "extract"
 MAX_CHARS_PROMPT = 4500
@@ -123,6 +123,10 @@ def principal(passe) -> None:
     if not manifest:
         raise SystemExit("Manifest absent : lancez d'abord scripts/10_normalize.sh")
     DOSSIER.mkdir(parents=True, exist_ok=True)
+    # Empreinte de la logique d'extraction : contenu + prompt (qui encode
+    # l'ontologie) + modèle. Modifier le prompt, l'ontologie ou le modèle
+    # invalide automatiquement le cache et ré-extrait ce qui est concerné.
+    version_logique = sha_texte(systeme + "\x00" + MODELE_EXTRACTION)
 
     for doc in manifest:
         chunks = lire_jsonl(WORK / "chunks" / f"{doc['doc_id']}.jsonl")
@@ -133,7 +137,7 @@ def principal(passe) -> None:
         depuis_flush = 0
 
         for chunk in chunks:
-            empreinte = sha_texte(chunk["texte"])
+            empreinte = sha_texte(chunk["texte"] + "\x00" + version_logique)
             en_cache = resultats.get(chunk["chunk_id"])
             if en_cache and en_cache.get("sha") == empreinte:
                 chunks_sortie.append(en_cache)
@@ -141,12 +145,15 @@ def principal(passe) -> None:
                 continue
             try:
                 extrait = extraire_chunk(chunk, systeme, onto)
+                extrait["sha"] = empreinte  # caché UNIQUEMENT en cas de succès
                 passe.compter("chunks_extraits")
             except Exception as e:
+                # Échec non caché (pas de sha) : sera réessayé au prochain run,
+                # sans bloquer les chunks réussis. Garantie « no-data-loss ».
                 passe.erreur(f"Extraction en échec : {chunk['chunk_id']}", str(e))
-                extrait = {"chunk_id": chunk["chunk_id"], "entites": [], "relations": []}
+                extrait = {"chunk_id": chunk["chunk_id"], "entites": [],
+                           "relations": [], "echec": True}
                 passe.compter("chunks_en_echec")
-            extrait["sha"] = empreinte
             chunks_sortie.append(extrait)
             depuis_flush += 1
             # Checkpoint : un kill au milieu d'un gros document ne reperd pas les

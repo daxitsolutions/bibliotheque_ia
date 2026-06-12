@@ -339,15 +339,33 @@ def principal(passe) -> None:
     for chemin in fichiers:
         relatif = str(chemin.relative_to(SOURCES))
         doc_id = "DOC-" + hashlib.sha1(relatif.encode("utf-8")).hexdigest()[:10]
+        chemin_md = WORK / "markdown" / f"{doc_id}.md"
+        prec = precedent.get(doc_id)
+        try:
+            stat = chemin.stat()
+        except OSError as e:
+            passe.erreur(f"Fichier illisible : {relatif}", str(e))
+            continue
+        mtime, taille = int(stat.st_mtime), stat.st_size
+
+        # Fast-path : mêmes métadonnées qu'au run précédent → on évite de relire et
+        # re-hasher le fichier entier (coûteux sur des milliers de gros documents).
+        if (prec and prec.get("mtime") == mtime and prec.get("taille") == taille
+                and chemin_md.exists()):
+            manifest.append(prec)
+            passe.compter("inchanges")
+            continue
+
         try:
             sha = sha256_fichier(chemin)
         except OSError as e:
             passe.erreur(f"Fichier illisible : {relatif}", str(e))
             continue
-        chemin_md = WORK / "markdown" / f"{doc_id}.md"
 
-        if doc_id in precedent and precedent[doc_id]["sha256"] == sha and chemin_md.exists():
-            manifest.append(precedent[doc_id])
+        # Contenu identique (seules les métadonnées ont bougé) : on réutilise le
+        # travail existant en rafraîchissant mtime/taille pour accélérer le run suivant.
+        if prec and prec.get("sha256") == sha and chemin_md.exists():
+            manifest.append({**prec, "mtime": mtime, "taille": taille})
             passe.compter("inchanges")
             continue
 
@@ -361,6 +379,8 @@ def principal(passe) -> None:
         if entree is None:
             passe.compter("ignores")
             continue
+        entree["mtime"] = mtime
+        entree["taille"] = taille
         manifest.append(entree)
         passe.compter("convertis")
         passe.compter("chunks", entree["nb_chunks"])
