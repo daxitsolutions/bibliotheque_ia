@@ -199,6 +199,21 @@ Repere simple :
 - `50` reconstruit `data/kb.sqlite` (build temporaire + permutation atomique).
 - `60` agrege les journaux et produit `data/rapport.md`.
 
+## Reinitialiser la base
+
+Les documents `data/sources/` ne sont jamais touches.
+
+```bash
+./scripts/99_reset.sh            # base seule : supprime data/kb.sqlite + le rapport
+./scripts/99_reset.sh --complet  # + vide data/work/ (tout le cache : extractions, embeddings...)
+```
+
+- Sans option, le cache de travail est conserve : la reconstruction est rapide et
+  sans appel LLM (`./scripts/run_all.sh 50`).
+- Avec `--complet`, tout est efface : la reconstruction relance l'extraction et
+  les embeddings (`./scripts/run_all.sh`), ce qui rappelle le LLM (long).
+- Le script demande confirmation ; ajoutez `--oui` pour l'automatiser.
+
 ## Interroger la base en CLI
 
 Quelques exemples :
