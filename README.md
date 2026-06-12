@@ -201,18 +201,24 @@ Repere simple :
 
 ## Reinitialiser la base
 
-Les documents `data/sources/` ne sont jamais touches.
+Trois niveaux, du moins au plus destructeur :
 
 ```bash
-./scripts/99_reset.sh            # base seule : supprime data/kb.sqlite + le rapport
-./scripts/99_reset.sh --complet  # + vide data/work/ (tout le cache : extractions, embeddings...)
+./scripts/99_reset.sh            # base seule : data/kb.sqlite + le rapport
+./scripts/99_reset.sh --complet  # + data/work/ (tout le cache : extractions, embeddings...)
+./scripts/99_reset.sh --sources  # + data/sources/ : supprime aussi VOS DOCUMENTS
 ```
 
 - Sans option, le cache de travail est conserve : la reconstruction est rapide et
   sans appel LLM (`./scripts/run_all.sh 50`).
-- Avec `--complet`, tout est efface : la reconstruction relance l'extraction et
-  les embeddings (`./scripts/run_all.sh`), ce qui rappelle le LLM (long).
-- Le script demande confirmation ; ajoutez `--oui` pour l'automatiser.
+- Avec `--complet`, le cache est efface : la reconstruction relance l'extraction
+  et les embeddings (`./scripts/run_all.sh`), ce qui rappelle le LLM (long).
+- Avec `--sources`, vos documents d'origine sont aussi supprimes (le dossier est
+  recree vide). **Irreversible** : le pipeline ne peut pas les reconstruire ;
+  ils ne sont recuperables que s'ils sont suivis par git. Implique `--complet` et
+  demande une confirmation supplementaire (taper `supprimer-sources`).
+- Le script demande confirmation ; ajoutez `--oui` pour l'automatiser. `config/`
+  n'est jamais touche.
 
 ## Interroger la base en CLI
 

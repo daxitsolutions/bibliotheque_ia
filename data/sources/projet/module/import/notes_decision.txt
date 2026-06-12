@@ -1,5 +1,0 @@
-Notes decision module Import
-
-Le module Import doit accepter les fichiers fournisseurs issus des anciens
-outils. Cette note sert d'exemple de fichier place dans une sous-arborescence
-profonde de data/sources.
