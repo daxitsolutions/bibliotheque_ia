@@ -1,5 +1,7 @@
 # Bibliotheque IA
 
+<img width="1024" height="572" alt="biblio_ia" src="https://github.com/user-attachments/assets/53959b83-2a96-4138-94da-9961251c34ad" />
+
 Bibliotheque IA transforme un dossier de documents en base de connaissances
 locale, interrogeable par une IA.
 
