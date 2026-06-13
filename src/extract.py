@@ -42,7 +42,11 @@ def nettoyer(donnees: dict, chunk_id: str, onto: dict) -> dict:
     entites, relations = [], []
     types_noeuds = set(onto["noeuds"])
     types_relations = set(onto["relations"])
+    if not isinstance(donnees, dict):
+        donnees = {}
     for e in donnees.get("entites", []) or []:
+        if not isinstance(e, dict):  # le modèle renvoie parfois des chaînes
+            continue
         type_e = str(e.get("type", "")).strip()
         nom = str(e.get("nom", "")).strip()
         if type_e not in types_noeuds or not nom:
@@ -55,6 +59,8 @@ def nettoyer(donnees: dict, chunk_id: str, onto: dict) -> dict:
             "citation": str(e.get("citation", "")).strip()[:500],
         })
     for r in donnees.get("relations", []) or []:
+        if not isinstance(r, dict):
+            continue
         type_r = str(r.get("type", "")).strip()
         source_type = str(r.get("source_type", "")).strip()
         cible_type = str(r.get("cible_type", "")).strip()

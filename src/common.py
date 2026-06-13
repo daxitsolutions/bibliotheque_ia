@@ -41,7 +41,7 @@ MODELE_EXTRACTION = os.environ.get("KB_MODELE_EXTRACTION", "qwen3:14b")
 MODELE_EMBEDDING = os.environ.get("KB_MODELE_EMBEDDING", "bge-m3")
 DIM_EMBEDDING = int(os.environ.get("KB_DIM_EMBEDDING", "1024"))
 NUM_CTX = int(os.environ.get("KB_NUM_CTX", "8192"))
-MAX_TOKENS_SORTIE = int(os.environ.get("KB_MAX_TOKENS_SORTIE", "3000"))  # plafond de génération
+MAX_TOKENS_SORTIE = int(os.environ.get("KB_MAX_TOKENS_SORTIE", "4096"))  # plafond de génération
 MAX_CHUNK = int(os.environ.get("KB_MAX_CHUNK", "2500"))
 SEUIL_FUSION = int(os.environ.get("KB_SEUIL_FUSION", "92"))
 SEUIL_ARBITRAGE = int(os.environ.get("KB_SEUIL_ARBITRAGE", "80"))
@@ -174,13 +174,77 @@ def ollama_disponible() -> bool:
     return embeddings_disponibles()
 
 
+def _reparer_json(texte: str) -> str:
+    """Répare un JSON tronqué ou légèrement malformé.
+
+    Cas visés : sortie LLM coupée par le plafond de tokens (chaîne ou structure
+    laissée ouverte) ou délimiteur manquant en fin. On rééquilibre les
+    accolades/crochets et on ferme une chaîne en suspens pour récupérer au
+    moins une extraction partielle plutôt que de perdre tout le chunk.
+    """
+    out, pile = [], []
+    dans_chaine = echappe = False
+    for c in texte:
+        if dans_chaine:
+            out.append(c)
+            if echappe:
+                echappe = False
+            elif c == "\\":
+                echappe = True
+            elif c == '"':
+                dans_chaine = False
+            continue
+        if c == '"':
+            dans_chaine = True
+        elif c in "{[":
+            pile.append(c)
+        elif c in "}]" and pile:
+            pile.pop()
+        out.append(c)
+    res = "".join(out)
+    if dans_chaine:  # chaîne coupée en plein milieu : on la termine
+        res += '"'
+    # retire les fragments de fin invalides laissés par la troncature :
+    # virgule/deux-points pendants, ou une clé en position de clé sans valeur
+    # (« {"clef": », « ,"clef" »). On itère jusqu'à stabilité.
+    while True:
+        precedent = res
+        res = re.sub(r'[,:]\s*$', "", res.rstrip())
+        res = re.sub(r'([{\[,])\s*"(?:[^"\\]|\\.)*"\s*$', r"\1", res.rstrip())
+        if res == precedent:
+            break
+    for c in reversed(pile):  # ferme les structures restées ouvertes
+        res += "}" if c == "{" else "]"
+    return res
+
+
 def extraire_json(texte: str) -> dict:
-    """Extrait le premier objet JSON d'une réponse, même entourée de bruit."""
+    """Extrait le premier objet JSON d'une réponse, même entourée de bruit.
+
+    Le modèle local produit régulièrement du JSON invalide : retours à la ligne
+    bruts ou guillemets non échappés dans les citations, délimiteurs manquants,
+    sortie tronquée au plafond de tokens. On tente le décodage strict, puis une
+    réparation tolérante (`json_repair`), puis un rééquilibrage structurel en
+    dernier recours, afin de récupérer au moins une extraction partielle.
+    """
     texte = re.sub(r"```(?:json)?", "", texte).strip()
     debut = texte.find("{")
     if debut < 0:
         raise ValueError(f"Aucun JSON dans la réponse : {texte[:200]!r}")
-    obj, _ = json.JSONDecoder().raw_decode(texte[debut:])
+    fragment = texte[debut:]
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(fragment)
+        return obj
+    except json.JSONDecodeError:
+        pass
+    try:
+        from json_repair import repair_json
+        obj = repair_json(fragment, return_objects=True)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    obj, _ = json.JSONDecoder().raw_decode(_reparer_json(fragment))
     return obj
 
 

@@ -210,14 +210,56 @@ def convertir_office_en_markdown(chemin: Path, doc_id: str) -> str:
     return md
 
 
+def _extraire_pdf_direct(chemin: Path) -> str | None:
+    """Extraction PDF sans dépendre du greffon optionnel de markitdown.
+
+    markitdown délègue les PDF à `pdfminer.six` ; quand l'extra `[pdf]` n'est
+    pas installé il lève MissingDependencyException et le fichier serait perdu.
+    On tente ici directement pdfminer puis pdfplumber (tous deux tirés par
+    `markitdown[pdf]`). Renvoie None si aucun n'est disponible.
+    """
+    try:
+        from pdfminer.high_level import extract_text
+        texte = extract_text(str(chemin)) or ""
+        if texte.strip():
+            return texte
+    except ImportError:
+        pass
+    except Exception as e:
+        avertir(f"Extraction PDF via pdfminer impossible pour {chemin.name} ({e})")
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(chemin)) as pdf:
+            texte = "\n\n".join(p.extract_text() or "" for p in pdf.pages)
+        if texte.strip():
+            return texte
+    except ImportError:
+        return None
+    except Exception as e:
+        avertir(f"Extraction PDF via pdfplumber impossible pour {chemin.name} ({e})")
+    return None
+
+
 def convertir_via_markitdown_ou_texte(chemin: Path) -> str:
+    est_pdf = chemin.suffix.lower() == ".pdf"
     try:
         from markitdown import MarkItDown
         resultat = MarkItDown().convert(str(chemin))
         if resultat.text_content and resultat.text_content.strip():
             return resultat.text_content
     except Exception as e:
+        # Pour un PDF, l'échec vient souvent de l'extra `[pdf]` manquant : on
+        # tente une extraction directe avant d'abandonner sur le texte brut.
+        if est_pdf:
+            direct = _extraire_pdf_direct(chemin)
+            if direct is not None:
+                return direct
         avertir(f"Fallback markitdown impossible pour {chemin.name} ({e}) ; tentative texte brut")
+
+    if est_pdf:  # markitdown a rendu du vide : dernier essai d'extraction PDF directe
+        direct = _extraire_pdf_direct(chemin)
+        if direct is not None:
+            return direct
 
     donnees = chemin.read_bytes()
     if b"\x00" in donnees[:4096]:

@@ -1,4 +1,5 @@
-markitdown
+markitdown[pdf]
+json-repair
 mcp
 pyyaml
 rapidfuzz
