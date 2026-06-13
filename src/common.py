@@ -43,6 +43,10 @@ DIM_EMBEDDING = int(os.environ.get("KB_DIM_EMBEDDING", "1024"))
 NUM_CTX = int(os.environ.get("KB_NUM_CTX", "8192"))
 MAX_TOKENS_SORTIE = int(os.environ.get("KB_MAX_TOKENS_SORTIE", "4096"))  # plafond de génération
 MAX_CHUNK = int(os.environ.get("KB_MAX_CHUNK", "2500"))
+# Nombre d'appels LLM d'extraction menés de front. 1 = strictement séquentiel
+# (préserve le serveur LM Studio unique) ; >1 accélère au prix d'une charge
+# concurrente sur le serveur. Réglable via KB_CONCURRENCE.
+CONCURRENCE = max(1, int(os.environ.get("KB_CONCURRENCE", "5")))
 SEUIL_FUSION = int(os.environ.get("KB_SEUIL_FUSION", "92"))
 SEUIL_ARBITRAGE = int(os.environ.get("KB_SEUIL_ARBITRAGE", "80"))
 ARBITRAGE_LLM = os.environ.get("KB_ARBITRAGE_LLM", "1") == "1"

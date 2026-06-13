@@ -44,6 +44,7 @@ else
   export KB_DIM_EMBEDDING="${KB_DIM_EMBEDDING:-1024}"
 fi
 export KB_NUM_CTX="${KB_NUM_CTX:-8192}"                            # fenêtre de contexte
+export KB_CONCURRENCE="${KB_CONCURRENCE:-5}"                       # appels LLM d'extraction menés de front (1 = séquentiel)
 
 # Découpage et canonisation
 export KB_MAX_CHUNK="${KB_MAX_CHUNK:-2500}"        # taille max d'un chunk (caractères)

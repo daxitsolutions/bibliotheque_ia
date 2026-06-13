@@ -5,9 +5,11 @@ demande au LLM d'extraire des entites et relations typpees avec provenance.
 Les resultats sont caches par empreinte du chunk.
 """
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from common import (MODELE_EXTRACTION, WORK, appel_llm, charger_ontologie,
-                    executer_passe, lire_jsonl, llm_disponible, log, sha_texte)
+from common import (CONCURRENCE, MODELE_EXTRACTION, WORK, appel_llm,
+                    charger_ontologie, executer_passe, lire_jsonl,
+                    llm_disponible, log, sha_texte)
 
 DOSSIER = WORK / "extract"
 MAX_CHARS_PROMPT = 4500
@@ -139,34 +141,56 @@ def principal(passe) -> None:
         sortie = DOSSIER / f"{doc['doc_id']}.json"
         cache = _charger_cache(sortie)
         resultats = {r["chunk_id"]: r for r in cache.get("chunks", [])}
-        chunks_sortie = []
-        depuis_flush = 0
 
+        # 1) Séparer les chunks déjà en cache (aucun appel LLM) de ceux à
+        #    (ré)extraire. On mémorise l'empreinte pour ne cacher qu'en succès.
+        par_id = {}  # chunk_id -> extrait, reconstruit dans l'ordre d'origine ensuite
+        a_extraire = []
         for chunk in chunks:
             empreinte = sha_texte(chunk["texte"] + "\x00" + version_logique)
             en_cache = resultats.get(chunk["chunk_id"])
             if en_cache and en_cache.get("sha") == empreinte:
-                chunks_sortie.append(en_cache)
+                par_id[chunk["chunk_id"]] = en_cache
                 passe.compter("chunks_caches")
-                continue
-            try:
-                extrait = extraire_chunk(chunk, systeme, onto)
-                extrait["sha"] = empreinte  # caché UNIQUEMENT en cas de succès
-                passe.compter("chunks_extraits")
-            except Exception as e:
-                # Échec non caché (pas de sha) : sera réessayé au prochain run,
-                # sans bloquer les chunks réussis. Garantie « no-data-loss ».
-                passe.erreur(f"Extraction en échec : {chunk['chunk_id']}", str(e))
-                extrait = {"chunk_id": chunk["chunk_id"], "entites": [],
-                           "relations": [], "echec": True}
-                passe.compter("chunks_en_echec")
-            chunks_sortie.append(extrait)
-            depuis_flush += 1
-            # Checkpoint : un kill au milieu d'un gros document ne reperd pas les
-            # appels LLM déjà effectués.
-            if depuis_flush >= CHECKPOINT_TOUS_LES:
-                _ecrire_doc(sortie, doc["doc_id"], chunks_sortie)
-                depuis_flush = 0
+            else:
+                a_extraire.append((chunk, empreinte))
+
+        # 2) Extraire les chunks restants, jusqu'à CONCURRENCE appels LLM de
+        #    front. Seul l'appel LLM est parallèle : la consommation des
+        #    résultats (compteurs, journal, écriture) reste dans ce thread, donc
+        #    sans verrou. Un échec reste non caché → réessayé au prochain run.
+        def _extraire(item):
+            chunk, empreinte = item
+            extrait = extraire_chunk(chunk, systeme, onto)
+            extrait["sha"] = empreinte  # caché UNIQUEMENT en cas de succès
+            return chunk["chunk_id"], extrait
+
+        depuis_flush = 0
+        with ThreadPoolExecutor(max_workers=CONCURRENCE) as executor:
+            futurs = {executor.submit(_extraire, it): it for it in a_extraire}
+            for futur in as_completed(futurs):
+                cid = futurs[futur][0]["chunk_id"]
+                try:
+                    _, extrait = futur.result()
+                    passe.compter("chunks_extraits")
+                except Exception as e:
+                    passe.erreur(f"Extraction en échec : {cid}", str(e))
+                    extrait = {"chunk_id": cid, "entites": [],
+                               "relations": [], "echec": True}
+                    passe.compter("chunks_en_echec")
+                par_id[cid] = extrait
+                depuis_flush += 1
+                # Checkpoint : un kill au milieu d'un gros document ne reperd pas
+                # les appels LLM déjà effectués. On écrit dans l'ordre d'origine.
+                if depuis_flush >= CHECKPOINT_TOUS_LES:
+                    partiel = [par_id[c["chunk_id"]] for c in chunks
+                               if c["chunk_id"] in par_id]
+                    _ecrire_doc(sortie, doc["doc_id"], partiel)
+                    depuis_flush = 0
+
+        # 3) Reconstruire la sortie dans l'ordre des chunks d'origine.
+        chunks_sortie = [par_id[c["chunk_id"]] for c in chunks
+                         if c["chunk_id"] in par_id]
 
         try:
             nb_entites, nb_relations = _ecrire_doc(sortie, doc["doc_id"], chunks_sortie)
